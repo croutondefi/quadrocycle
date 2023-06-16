@@ -1,15 +1,17 @@
 package config
 
 import (
+	"log"
+	"math/big"
+	"strings"
+	"time"
+
 	"github.com/caarlos0/env/v6"
 	"github.com/shopspring/decimal"
 	"github.com/tonkeeper/tongo/boc"
 	"github.com/xssnick/tonutils-go/address"
 	"github.com/xssnick/tonutils-go/tlb"
-	"log"
-	"math/big"
-	"strings"
-	"time"
+	"github.com/xssnick/tonutils-go/ton/wallet"
 )
 
 var (
@@ -35,22 +37,23 @@ const (
 )
 
 var Config = struct {
-	LiteServer               string `env:"LITESERVER,required"`
-	LiteServerKey            string `env:"LITESERVER_KEY,required"`
-	Seed                     string `env:"SEED,required"`
-	DatabaseURI              string `env:"DB_URI,required"`
-	APIHost                  string `env:"API_HOST" envDefault:"0.0.0.0:8081"`
-	APIToken                 string `env:"API_TOKEN,required"`
-	Testnet                  bool   `env:"IS_TESTNET" envDefault:"true"`
-	ColdWalletString         string `env:"COLD_WALLET"`
-	JettonString             string `env:"JETTONS"`
-	TonString                string `env:"TON_CUTOFFS,required"`
-	IsDepositSideCalculation bool   `env:"DEPOSIT_SIDE_BALANCE" envDefault:"true"` // TODO: rename to DEPOSIT_SIDE_CALCULATION
-	QueueURI                 string `env:"QUEUE_URI"`
-	QueueName                string `env:"QUEUE_NAME"`
-	QueueEnabled             bool   `env:"QUEUE_ENABLED" envDefault:"false"`
-	WebhookEndpoint          string `env:"WEBHOOK_ENDPOINT"`
-	WebhookToken             string `env:"WEBHOOK_TOKEN"`
+	LiteServerConfigURL      string         `env:"LITESERVER_CFG_URL,required"`
+	DefaultWalletVersion     wallet.Version `env:"DEFAULT_WALLET_VERSION,required"`
+	Seed                     string         `env:"SEED,required"`
+	DatabaseURI              string         `env:"DB_URI,required"`
+	APIHost                  string         `env:"API_HOST" envDefault:"0.0.0.0:8081"`
+	APIPort                  string         `env:"API_PORT" envDefault:"8081"`
+	APIToken                 string         `env:"API_TOKEN,required"`
+	Testnet                  bool           `env:"IS_TESTNET" envDefault:"true"`
+	ColdWalletString         string         `env:"COLD_WALLET"`
+	JettonString             string         `env:"JETTONS"`
+	TonString                string         `env:"TON_CUTOFFS,required"`
+	IsDepositSideCalculation bool           `env:"DEPOSIT_SIDE_BALANCE" envDefault:"true"` // TODO: rename to DEPOSIT_SIDE_CALCULATION
+	QueueURI                 string         `env:"QUEUE_URI"`
+	QueueName                string         `env:"QUEUE_NAME"`
+	QueueEnabled             bool           `env:"QUEUE_ENABLED" envDefault:"false"`
+	WebhookEndpoint          string         `env:"WEBHOOK_ENDPOINT"`
+	WebhookToken             string         `env:"WEBHOOK_TOKEN"`
 	Jettons                  map[string]Jetton
 	Ton                      Cutoffs
 	ColdWallet               *address.Address

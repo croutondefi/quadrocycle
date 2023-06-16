@@ -2,13 +2,14 @@ package blockchain
 
 import (
 	"context"
+	"math/bits"
+	"strings"
+	"time"
+
 	"github.com/gobicycle/bicycle/core"
 	log "github.com/sirupsen/logrus"
 	"github.com/xssnick/tonutils-go/tlb"
 	"github.com/xssnick/tonutils-go/ton"
-	"math/bits"
-	"strings"
-	"time"
 )
 
 const ErrBlockNotApplied = "block is not applied"
@@ -49,13 +50,15 @@ func (s *ShardTracker) NextBlock() (core.ShardBlockHeader, bool, error) {
 		return *h, false, nil
 	}
 	// the interval between blocks can be up to 40 seconds
-	ctx, cancel := context.WithTimeout(context.Background(), time.Second*60)
-	defer cancel()
+	// ctx, cancel := context.WithTimeout(context.Background(), time.Second*120)
+	ctx := s.connection.Client().StickyContext(context.Background())
 	masterBlockID, err := s.getNextMasterBlockID(ctx)
+	log.Printf("getNextMasterBlockID %s", err)
 	if err != nil {
 		return core.ShardBlockHeader{}, false, err
 	}
 	exit, err := s.loadShardBlocksBatch(masterBlockID)
+	log.Printf("loadShardBlocksBatch %s", err)
 	if err != nil {
 		return core.ShardBlockHeader{}, false, err
 	}
@@ -153,9 +156,9 @@ func (s *ShardTracker) getShardBlocksRecursively(i *ton.BlockIDExt, batch []core
 			estimatedTime := time.Duration(seqnoDiff/s.infoStep) * time.Since(s.infoLastTime)
 			s.infoLastTime = time.Now()
 			if s.infoCounter == 0 {
-				log.Printf("Shard tracker syncing... Seqno diff: %v Estimated time: unknown\n", seqnoDiff)
+				log.Printf("Shard tracker syncing... Seqno diff: %v Estimated time: unknown", seqnoDiff)
 			} else {
-				log.Printf("Shard tracker syncing... Seqno diff: %v Estimated time: %v\n", seqnoDiff, estimatedTime)
+				log.Printf("Shard tracker syncing... Seqno diff: %v Estimated time: %v", seqnoDiff, estimatedTime)
 			}
 		}
 		s.infoCounter++

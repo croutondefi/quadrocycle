@@ -3,6 +3,12 @@ package blockchain
 import (
 	"context"
 	"fmt"
+	"math"
+	"math/big"
+	"sort"
+	"strings"
+	"time"
+
 	"github.com/gobicycle/bicycle/config"
 	"github.com/gobicycle/bicycle/core"
 	log "github.com/sirupsen/logrus"
@@ -15,15 +21,11 @@ import (
 	"github.com/xssnick/tonutils-go/tlb"
 	"github.com/xssnick/tonutils-go/ton"
 	"github.com/xssnick/tonutils-go/ton/wallet"
-	"math"
-	"math/big"
-	"sort"
-	"strings"
-	"time"
 )
 
 type Connection struct {
-	client *ton.APIClient
+	client               *ton.APIClient
+	defaultWalletVersion wallet.Version
 }
 
 type contract struct {
@@ -33,15 +35,16 @@ type contract struct {
 }
 
 // NewConnection creates new Blockchain connection
-func NewConnection(addr, key string) (*Connection, error) {
+func NewConnection(configURL string, defaultVersion wallet.Version) (*Connection, error) {
 	client := liteclient.NewConnectionPool()
-	ctx, cancel := context.WithTimeout(context.Background(), time.Second*10)
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second*30)
 	defer cancel()
-	err := client.AddConnection(ctx, addr, key)
+
+	err := client.AddConnectionsFromConfigUrl(ctx, configURL)
 	if err != nil {
 		return nil, fmt.Errorf("connection err: %v", err.Error())
 	}
-	return &Connection{ton.NewAPIClient(client)}, nil
+	return &Connection{ton.NewAPIClient(client), defaultVersion}, nil
 }
 
 // GenerateDefaultWallet generates HighloadV2R2 or V3R2 TON wallet with
@@ -55,7 +58,7 @@ func (c *Connection) GenerateDefaultWallet(seed string, isHighload bool) (
 	if isHighload {
 		w, err = wallet.FromSeed(c, words, wallet.HighloadV2R2)
 	} else {
-		w, err = wallet.FromSeed(c, words, wallet.V3)
+		w, err = wallet.FromSeed(c, words, c.defaultWalletVersion)
 	}
 	if err != nil {
 		return nil, 0, 0, err
@@ -184,6 +187,46 @@ func (c *Connection) getContract(ctx context.Context, addr *address.Address) (co
 		Code:    codeCell[0],
 		Data:    dataCell[0],
 	}, nil
+}
+
+func getJettonWalletAddress(
+	ctx context.Context,
+	owner *address.Address,
+	jettonMaster *address.Address,
+	client *ton.APIClient,
+) (*address.Address, error) {
+	// client.RunGetMethod(ctx)
+	// ownerAccountID, err := tongo.ParseAccountID(owner.String())
+	// if err != nil {
+	// 	return core.Address{}, err
+	// }
+	// slice, err := tongoTlb.TlbStructToVmCellSlice(ownerAccountID.ToMsgAddress())
+	// if err != nil {
+	// 	return core.Address{}, err
+	// }
+
+	// code, result, err := emulator.RunSmcMethod(context.Background(), jettonMaster, "get_wallet_address",
+	// 	tongoTlb.VmStack{slice})
+	// if err != nil {
+	// 	return core.Address{}, err
+	// }
+	// if code != 0 || len(result) != 1 || result[0].SumType != "VmStkSlice" {
+	// 	return core.Address{}, fmt.Errorf("tvm execution failed")
+	// }
+
+	// var msgAddress tongoTlb.MsgAddress
+	// err = result[0].VmStkSlice.UnmarshalToTlbStruct(&msgAddress)
+	// if err != nil {
+	// 	return core.Address{}, err
+	// }
+	// if msgAddress.SumType != "AddrStd" {
+	// 	return core.Address{}, fmt.Errorf("not std jetton wallet address")
+	// }
+	// if msgAddress.AddrStd.WorkchainId != core.DefaultWorkchain {
+	// 	return core.Address{}, fmt.Errorf("not default workchain for jetton wallet address")
+	// }
+	// return core.Address(msgAddress.AddrStd.Address), nil
+	return nil, nil
 }
 
 func getJettonWalletAddressByTVM(

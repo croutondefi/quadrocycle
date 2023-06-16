@@ -3,42 +3,46 @@ version: '3'
 services:
 
   payment-postgres:
-    image: postgres:14
+    image: postgres:15
     container_name: payment_processor_db
     volumes:
     - ./deploy/db/01_init.up.sql:/docker-entrypoint-initdb.d/init.sql
     ports:
-      - "5432:5432"
+      - "5433:5433"
     restart: always
     env_file:
       - .env
     environment:
       POSTGRES_DB: "payment_processor"
       POSTGRES_USER: "pp_user"
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
-    networks:
-      - p-network
+      POSTGRES_PORT: 5433
+      POSTGRES_PASSWORD: db_pass
+    # networks:
+    #   - p-network
 
   payment-processor:
     image: payment-processor
     container_name: payment_processor
+    depends_on:
+      - payment-postgres
+    build:
+      context: .
+      dockerfile: ./Dockerfile
     ports:
       - "8081:8081"
     restart: unless-stopped
     env_file:
       - .env
     environment:
-      DB_URI: "postgres://pp_user:${POSTGRES_PASSWORD}@payment_processor_db:5432/payment_processor"
-      API_TOKEN: ${API_TOKEN}
-      COLD_WALLET: ${COLD_WALLET}
-      JETTONS: ${JETTONS}
-      LITESERVER: ${LITESERVER}
-      LITESERVER_KEY: ${LITESERVER_KEY}
-      SEED: ${SEED}
-      TON_CUTOFFS: ${TON_CUTOFFS}
-      IS_TESTNET: ${IS_TESTNET}
-    networks:
-      - p-network
+      DB_URI: "postgres://pp_user:db_pass@payment_processor_db:5432/payment_processor?sslmode=disable"
+      # API_TOKEN: ${API_TOKEN}
+      # COLD_WALLET: ${COLD_WALLET}
+      # JETTONS: ${JETTONS}
+      # SEED: ${SEED}
+      # TON_CUTOFFS: ${TON_CUTOFFS}
+      # IS_TESTNET: ${IS_TESTNET}
+    # networks:
+    #   - p-network
 
   payment-grafana:
     image: grafana/grafana:latest
@@ -56,19 +60,22 @@ services:
       GF_SECURITY_ADMIN_USER: admin
       GF_SECURITY_ADMIN_PASSWORD: admin
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
-    networks:
-      - p-network
+    # networks:
+    #   - p-network
+    logging:
+      driver: none
 
-  payment-rabbitmq:
-    image: library/rabbitmq:3-management
-    container_name: payment_rabbitmq
-    restart: always
-    ports:
-      - '15672:15672'
-      - '5672:5672'
-    networks:
-      - p-network
 
-networks:
-  p-network:
-    driver: bridge
+  # payment-rabbitmq:
+  #   image: library/rabbitmq:3-management
+  #   container_name: payment_rabbitmq
+  #   restart: always
+  #   ports:
+  #     - '15672:15672'
+  #     - '5672:5672'
+  #   networks:
+  #     - p-network
+
+# networks:
+#   p-network:
+#     driver: bridge

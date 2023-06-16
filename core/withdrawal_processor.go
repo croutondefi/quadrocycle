@@ -3,6 +3,11 @@ package core
 import (
 	"context"
 	"fmt"
+	"math/big"
+	"sync"
+	"sync/atomic"
+	"time"
+
 	"github.com/gobicycle/bicycle/audit"
 	"github.com/gobicycle/bicycle/config"
 	"github.com/gofrs/uuid"
@@ -10,10 +15,6 @@ import (
 	"github.com/xssnick/tonutils-go/address"
 	"github.com/xssnick/tonutils-go/tlb"
 	"github.com/xssnick/tonutils-go/ton/wallet"
-	"math/big"
-	"sync"
-	"sync/atomic"
-	"time"
 )
 
 type WithdrawalsProcessor struct {
@@ -510,7 +511,7 @@ func (p *WithdrawalsProcessor) withdrawTONsFromDeposit(ctx context.Context, task
 	if err != nil {
 		return err
 	}
-	spec := subwallet.GetSpec().(*wallet.SpecV3)
+	spec := subwallet.GetSpec().(*wallet.SpecV4R2)
 	spec.SetMessagesTTL(uint32(config.ExternalMessageLifetime.Seconds()))
 
 	balance, state, err := p.bc.GetAccountCurrentState(ctx, subwallet.Address())
@@ -546,7 +547,7 @@ func (p *WithdrawalsProcessor) serviceWithdrawJettons(ctx context.Context, task 
 	if err != nil {
 		return err
 	}
-	spec := subwallet.GetSpec().(*wallet.SpecV3)
+	spec := subwallet.GetSpec().(*wallet.SpecV4R2)
 	spec.SetMessagesTTL(uint32(config.ExternalMessageLifetime.Seconds()))
 
 	_, state, err := p.bc.GetAccountCurrentState(ctx, subwallet.Address())

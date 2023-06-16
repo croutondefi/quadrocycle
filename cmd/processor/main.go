@@ -3,6 +3,14 @@ package main
 import (
 	"context"
 	"errors"
+	"fmt"
+	"net/http"
+	"os"
+	"os/signal"
+	"sync"
+	"syscall"
+	"time"
+
 	"github.com/gobicycle/bicycle/api"
 	"github.com/gobicycle/bicycle/blockchain"
 	"github.com/gobicycle/bicycle/config"
@@ -11,12 +19,6 @@ import (
 	"github.com/gobicycle/bicycle/queue"
 	"github.com/gobicycle/bicycle/webhook"
 	log "github.com/sirupsen/logrus"
-	"net/http"
-	"os"
-	"os/signal"
-	"sync"
-	"syscall"
-	"time"
 )
 
 func main() {
@@ -26,7 +28,7 @@ func main() {
 	signal.Notify(sigChannel, os.Interrupt, syscall.SIGTERM)
 	wg := new(sync.WaitGroup)
 
-	bcClient, err := blockchain.NewConnection(config.Config.LiteServer, config.Config.LiteServerKey)
+	bcClient, err := blockchain.NewConnection(config.Config.LiteServerConfigURL, config.Config.DefaultWalletVersion)
 	if err != nil {
 		log.Fatalf("blockchain connection error: %v", err)
 	}
@@ -94,8 +96,17 @@ func main() {
 	apiMux := http.NewServeMux()
 	h := api.NewHandler(dbClient, bcClient, config.Config.APIToken, wallets.Shard, *wallets.TonHotWallet.Address())
 	api.RegisterHandlers(apiMux, h)
+
+	srv := &http.Server{
+		Addr:         fmt.Sprintf(":%s", config.Config.APIPort),
+		WriteTimeout: time.Second * 15,
+		ReadTimeout:  time.Second * 15,
+		IdleTimeout:  time.Second * 60,
+		Handler:      apiMux,
+	}
+
 	go func() {
-		err := http.ListenAndServe(config.Config.APIHost, apiMux)
+		err := srv.ListenAndServe()
 		if err != nil {
 			log.Fatalf("api error: %v", err)
 		}

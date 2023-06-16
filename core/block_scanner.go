@@ -3,6 +3,10 @@ package core
 import (
 	"context"
 	"fmt"
+	"math/big"
+	"sync"
+	"time"
+
 	"github.com/gobicycle/bicycle/audit"
 	"github.com/gobicycle/bicycle/config"
 	"github.com/gofrs/uuid"
@@ -14,9 +18,6 @@ import (
 	"github.com/xssnick/tonutils-go/tlb"
 	"github.com/xssnick/tonutils-go/ton"
 	"github.com/xssnick/tonutils-go/tvm/cell"
-	"math/big"
-	"sync"
-	"time"
 )
 
 type BlockScanner struct {
@@ -85,9 +86,11 @@ func (s *BlockScanner) Start() {
 	defer s.wg.Done()
 	log.Printf("Block scanner started")
 	for {
+		log.Printf("Block scanning iteration")
 		block, exit, err := s.tracker.NextBlock()
 		if err != nil {
-			log.Fatalf("get block error: %v", err)
+			log.Errorf("get block error: %v", err)
+			continue
 		}
 		if exit {
 			log.Printf("Block scanner stopped")
@@ -95,10 +98,11 @@ func (s *BlockScanner) Start() {
 		}
 		ctx, cancel := context.WithTimeout(context.Background(), time.Second*15)
 		err = s.processBlock(ctx, block)
+		cancel()
 		if err != nil {
 			log.Fatalf("block processing error: %v", err)
 		}
-		cancel()
+		log.Printf("Block %d scanned successfuly", block.SeqNo)
 	}
 }
 

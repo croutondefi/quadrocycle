@@ -3,6 +3,12 @@ package blockchain
 import (
 	"bytes"
 	"context"
+	"math/big"
+	"math/rand"
+	"os"
+	"testing"
+	"time"
+
 	"github.com/gobicycle/bicycle/config"
 	"github.com/gobicycle/bicycle/core"
 	"github.com/tonkeeper/tongo/boc"
@@ -10,11 +16,6 @@ import (
 	"github.com/xssnick/tonutils-go/tlb"
 	"github.com/xssnick/tonutils-go/ton/jetton"
 	"github.com/xssnick/tonutils-go/ton/wallet"
-	"math/big"
-	"math/rand"
-	"os"
-	"testing"
-	"time"
 )
 
 var (
@@ -36,11 +37,7 @@ func connect(t *testing.T) *Connection {
 	if server == "" {
 		t.Fatal("empty server var")
 	}
-	key := os.Getenv("KEY")
-	if server == "" {
-		t.Fatal("empty key var")
-	}
-	c, err := NewConnection(server, key)
+	c, err := NewConnection(server, wallet.V4R2)
 	if err != nil {
 		t.Fatal("connections err: ", err)
 	}
