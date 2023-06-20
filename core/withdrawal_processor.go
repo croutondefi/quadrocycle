@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"math/big"
-	"sync"
 	"sync/atomic"
 	"time"
 
@@ -22,7 +21,6 @@ type WithdrawalsProcessor struct {
 	bc               blockchain
 	wallets          Wallets
 	coldWallet       *address.Address
-	wg               *sync.WaitGroup
 	gracefulShutdown atomic.Bool
 }
 
@@ -45,7 +43,6 @@ type withdrawals struct {
 }
 
 func NewWithdrawalsProcessor(
-	wg *sync.WaitGroup,
 	db storage,
 	bc blockchain,
 	wallets Wallets,
@@ -56,13 +53,11 @@ func NewWithdrawalsProcessor(
 		bc:         bc,
 		wallets:    wallets,
 		coldWallet: coldWallet,
-		wg:         wg,
 	}
 	return w
 }
 
 func (p *WithdrawalsProcessor) Start() {
-	p.wg.Add(3)
 	go p.startWithdrawalsProcessor()
 	go p.startInternalTonWithdrawalsProcessor()
 	go p.startExpirationProcessor()
@@ -73,7 +68,6 @@ func (p *WithdrawalsProcessor) Stop() {
 }
 
 func (p *WithdrawalsProcessor) startWithdrawalsProcessor() {
-	defer p.wg.Done()
 	log.Infof("External withdrawal processor started")
 	for {
 		p.waitSync() // gracefulShutdown break must be after waitSync
@@ -451,7 +445,6 @@ func (p *WithdrawalsProcessor) buildExternalWithdrawalMessage(wt ExternalWithdra
 
 func (p *WithdrawalsProcessor) startExpirationProcessor() {
 	log.Infof("Expiration processor started")
-	defer p.wg.Done()
 	for {
 		p.waitSync() // gracefulShutdown break must be after waitSync
 		if p.gracefulShutdown.Load() {
@@ -469,7 +462,6 @@ func (p *WithdrawalsProcessor) startExpirationProcessor() {
 }
 
 func (p *WithdrawalsProcessor) startInternalTonWithdrawalsProcessor() {
-	defer p.wg.Done()
 	log.Infof("Internal TON withdrawal processor started")
 	for {
 		p.waitSync() // gracefulShutdown break must be after waitSync

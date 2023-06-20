@@ -5,6 +5,9 @@ import (
 	"database/sql/driver"
 	"errors"
 	"fmt"
+	"math/big"
+	"time"
+
 	"github.com/gobicycle/bicycle/config"
 	"github.com/gofrs/uuid"
 	"github.com/shopspring/decimal"
@@ -12,8 +15,6 @@ import (
 	"github.com/xssnick/tonutils-go/tlb"
 	"github.com/xssnick/tonutils-go/ton"
 	"github.com/xssnick/tonutils-go/ton/wallet"
-	"math/big"
-	"time"
 )
 
 const (
@@ -328,7 +329,7 @@ type blockchain interface {
 }
 
 type blocksTracker interface {
-	NextBlock() (ShardBlockHeader, bool, error)
+	Start(context.Context)
 	Stop()
 }
 

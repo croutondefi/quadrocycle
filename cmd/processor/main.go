@@ -7,7 +7,6 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
-	"sync"
 	"syscall"
 	"time"
 
@@ -19,14 +18,16 @@ import (
 	"github.com/gobicycle/bicycle/queue"
 	"github.com/gobicycle/bicycle/webhook"
 	log "github.com/sirupsen/logrus"
+	"github.com/xssnick/tonutils-go/ton"
 )
+
+var blocksChan chan *core.ShardBlockHeader
 
 func main() {
 	config.GetConfig()
 
 	sigChannel := make(chan os.Signal, 1)
 	signal.Notify(sigChannel, os.Interrupt, syscall.SIGTERM)
-	wg := new(sync.WaitGroup)
 
 	bcClient, err := blockchain.NewConnection(config.Config.LiteServerConfigURL, config.Config.DefaultWalletVersion)
 	if err != nil {
@@ -77,20 +78,26 @@ func main() {
 		notificators = append(notificators, webhookClient)
 	}
 
-	var tracker *blockchain.ShardTracker
-	block, err := dbClient.GetLastSavedBlockID(ctx)
-	if !errors.Is(err, core.ErrNotFound) && err != nil {
-		log.Fatalf("Get last saved block error: %v", err)
-	} else if errors.Is(err, core.ErrNotFound) {
-		tracker = blockchain.NewShardTracker(wallets.Shard, nil, bcClient)
-	} else {
-		tracker = blockchain.NewShardTracker(wallets.Shard, block, bcClient)
-	}
+	scannerCtx, scannerCancel := context.WithCancel(context.Background())
+	defer scannerCancel()
 
-	blockScanner := core.NewBlockScanner(wg, dbClient, bcClient, wallets.Shard, tracker, notificators)
+	blocksChan = make(chan *core.ShardBlockHeader)
+
+	var startBlock *ton.BlockIDExt
+	startBlock, err = dbClient.GetLastSavedBlockID(ctx)
+
+	if err != nil && !errors.Is(err, core.ErrNotFound) {
+		log.Fatalf("Get last saved block error: %v", err)
+	}
+	tracker := blockchain.NewShardTracker(wallets.Shard, startBlock, bcClient, blocksChan)
+
+	go tracker.Start(scannerCtx)
+
+	blockScanner := core.NewBlockScanner(dbClient, bcClient, wallets.Shard, notificators, blocksChan)
+	go blockScanner.Start(scannerCtx)
 
 	withdrawalsProcessor := core.NewWithdrawalsProcessor(
-		wg, dbClient, bcClient, wallets, config.Config.ColdWallet)
+		dbClient, bcClient, wallets, config.Config.ColdWallet)
 	withdrawalsProcessor.Start()
 
 	apiMux := http.NewServeMux()
@@ -106,18 +113,15 @@ func main() {
 	}
 
 	go func() {
-		err := srv.ListenAndServe()
-		if err != nil {
-			log.Fatalf("api error: %v", err)
-		}
-	}()
-
-	go func() {
 		<-sigChannel
 		log.Printf("SIGTERM received")
-		blockScanner.Stop()
+		scannerCancel()
+		close(blocksChan)
 		withdrawalsProcessor.Stop()
 	}()
 
-	wg.Wait()
+	srv.ListenAndServe()
+	if err != nil {
+		log.Fatalf("api error: %v", err)
+	}
 }

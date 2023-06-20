@@ -15,163 +15,125 @@ import (
 const ErrBlockNotApplied = "block is not applied"
 
 type ShardTracker struct {
-	connection            *Connection
-	shard                 byte
-	lastKnownShardBlock   *ton.BlockIDExt
-	lastMasterBlock       *ton.BlockIDExt
-	buffer                []core.ShardBlockHeader
-	gracefulShutdown      bool
-	infoCounter, infoStep int
-	infoLastTime          time.Time
+	connection          *Connection
+	shard               byte
+	lastKnownShardBlock *ton.BlockIDExt
+	lastMasterBlock     *ton.BlockIDExt
+	blocksChan          chan *core.ShardBlockHeader
 }
 
 // NewShardTracker creates new tracker to get blocks with specific shard attribute
-func NewShardTracker(shard byte, startBlock *ton.BlockIDExt, connection *Connection) *ShardTracker {
+func NewShardTracker(
+	shard byte,
+	startBlock *ton.BlockIDExt,
+	connection *Connection,
+	blocksChan chan *core.ShardBlockHeader,
+) *ShardTracker {
 	t := &ShardTracker{
 		connection:          connection,
 		shard:               shard,
 		lastKnownShardBlock: startBlock,
-		buffer:              make([]core.ShardBlockHeader, 0),
-		infoCounter:         0,
-		infoStep:            1000,
-		infoLastTime:        time.Now(),
+		blocksChan:          blocksChan,
 	}
 	return t
 }
 
-// NextBlock returns next block header and graceful shutdown flag.
-// (ShardBlockHeader, false) for normal operation and (empty block header, true) for graceful shutdown.
-func (s *ShardTracker) NextBlock() (core.ShardBlockHeader, bool, error) {
-	if s.gracefulShutdown {
-		return core.ShardBlockHeader{}, true, nil
-	}
-	h := s.getNext()
-	if h != nil {
-		return *h, false, nil
-	}
+// Start scans for blocks.
+func (s *ShardTracker) Start(ctx context.Context) {
 	// the interval between blocks can be up to 40 seconds
-	// ctx, cancel := context.WithTimeout(context.Background(), time.Second*120)
-	ctx := s.connection.Client().StickyContext(context.Background())
-	masterBlockID, err := s.getNextMasterBlockID(ctx)
-	log.Printf("getNextMasterBlockID %s", err)
-	if err != nil {
-		return core.ShardBlockHeader{}, false, err
+	ctx = s.connection.Client().StickyContext(ctx)
+
+	for {
+		masterBlock, err := s.getCurrentMasterBlock(ctx)
+		if err != nil {
+			log.Printf("getNextMasterBlockID err - %v", err)
+
+			continue
+		}
+		err = s.loadShardBlocksBatch(ctx, masterBlock)
+		if err != nil {
+			log.Printf("loadShardBlocksBatch err - %v", err)
+
+			continue
+		}
 	}
-	exit, err := s.loadShardBlocksBatch(masterBlockID)
-	log.Printf("loadShardBlocksBatch %s", err)
-	if err != nil {
-		return core.ShardBlockHeader{}, false, err
-	}
-	if exit {
-		log.Printf("Shard tracker sync stopped")
-		return core.ShardBlockHeader{}, true, nil
-	}
-	return s.NextBlock()
 }
 
 // Stop initiates graceful shutdown
 func (s *ShardTracker) Stop() {
-	s.gracefulShutdown = true
 }
 
-func (s *ShardTracker) getNext() *core.ShardBlockHeader {
-	if len(s.buffer) != 0 {
-		h := s.buffer[0]
-		s.buffer = s.buffer[1:]
-		return &h
-	}
-	return nil
-}
-
-func (s *ShardTracker) getNextMasterBlockID(ctx context.Context) (*ton.BlockIDExt, error) {
+func (s *ShardTracker) getCurrentMasterBlock(ctx context.Context) (*ton.BlockIDExt, error) {
 	for {
-		masterBlockID, err := s.connection.client.GetMasterchainInfo(ctx)
+		masterBlock, err := s.connection.client.GetMasterchainInfo(ctx)
 		if err != nil {
 			// exit by context timeout
 			return nil, err
 		}
 		if s.lastMasterBlock == nil {
-			s.lastMasterBlock = masterBlockID
-			return masterBlockID, nil
+			s.lastMasterBlock = masterBlock
+			return masterBlock, nil
 		}
-		if masterBlockID.SeqNo == s.lastMasterBlock.SeqNo {
-			time.Sleep(time.Second)
+		if masterBlock.SeqNo == s.lastMasterBlock.SeqNo {
+			time.Sleep(time.Second * 30)
 			continue
 		}
-		s.lastMasterBlock = masterBlockID
-		return masterBlockID, nil
+		s.lastMasterBlock = masterBlock
+		return masterBlock, nil
 	}
 }
 
-func (s *ShardTracker) loadShardBlocksBatch(masterBlockID *ton.BlockIDExt) (bool, error) {
+func (s *ShardTracker) loadShardBlocksBatch(ctx context.Context, masterBlock *ton.BlockIDExt) error {
 	var (
-		shards []*ton.BlockIDExt
-		err    error
+		blocksShardsInfo []*ton.BlockIDExt
+		err              error
 	)
-	ctx, cancel := context.WithTimeout(context.Background(), time.Second*20)
-	defer cancel()
 	for {
-		shards, err = s.connection.client.GetBlockShardsInfo(ctx, masterBlockID)
+		blocksShardsInfo, err = s.connection.client.GetBlockShardsInfo(ctx, masterBlock)
 		if err != nil && isNotReadyError(err) { // TODO: clarify error type
 			time.Sleep(time.Second)
 			continue
 		} else if err != nil {
-			return false, err
-			// exit by context timeout
+			return err
 		}
 		break
 	}
-	s.infoCounter = 0
-	batch, exit, err := s.getShardBlocksRecursively(filterByShard(shards, s.shard), nil)
+	err = s.getShardBlocks(ctx, filterByShard(blocksShardsInfo, s.shard))
 	if err != nil {
-		return false, err
+		return err
 	}
-	if exit {
-		return true, nil
-	}
-	if len(batch) != 0 {
-		s.lastKnownShardBlock = batch[0].BlockIDExt
-		for i := len(batch) - 1; i >= 0; i-- {
-			s.buffer = append(s.buffer, batch[i])
-		}
-	}
-	return false, nil
+
+	return nil
 }
 
-func (s *ShardTracker) getShardBlocksRecursively(i *ton.BlockIDExt, batch []core.ShardBlockHeader) ([]core.ShardBlockHeader, bool, error) {
-	if s.gracefulShutdown {
-		return nil, true, nil
-	}
-	if s.lastKnownShardBlock == nil {
-		s.lastKnownShardBlock = i
-	}
-	isKnown := (s.lastKnownShardBlock.Shard == i.Shard) && (s.lastKnownShardBlock.SeqNo == i.SeqNo)
-	if isKnown {
-		return batch, false, nil
-	}
+func (s *ShardTracker) getShardBlocks(ctx context.Context, i *ton.BlockIDExt) error {
+	var currentBlock *ton.BlockIDExt = i
+	start := time.Now()
 
-	seqnoDiff := int(i.SeqNo - s.lastKnownShardBlock.SeqNo)
-	if seqnoDiff > s.infoStep {
-		if s.infoCounter%s.infoStep == 0 {
-			estimatedTime := time.Duration(seqnoDiff/s.infoStep) * time.Since(s.infoLastTime)
-			s.infoLastTime = time.Now()
-			if s.infoCounter == 0 {
-				log.Printf("Shard tracker syncing... Seqno diff: %v Estimated time: unknown", seqnoDiff)
-			} else {
-				log.Printf("Shard tracker syncing... Seqno diff: %v Estimated time: %v", seqnoDiff, estimatedTime)
-			}
+	var diff = int(i.SeqNo - s.lastKnownShardBlock.SeqNo)
+
+	log.Printf("Shard tracker. Seqno diff: %v", diff)
+
+	for {
+		isKnown := (s.lastKnownShardBlock.Shard == currentBlock.Shard) && (s.lastKnownShardBlock.SeqNo == currentBlock.SeqNo)
+		if isKnown {
+			s.lastKnownShardBlock = i
+			break
 		}
-		s.infoCounter++
+
+		h, err := s.connection.getShardBlocksHeader(ctx, currentBlock, s.shard)
+
+		if err != nil {
+			return err
+		}
+
+		s.blocksChan <- &h
+		currentBlock = h.Parent
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), time.Second*20)
-	defer cancel()
-	h, err := s.connection.getShardBlocksHeader(ctx, i, s.shard)
-	if err != nil {
-		return nil, false, err
-	}
-	batch = append(batch, h)
-	return s.getShardBlocksRecursively(h.Parent, batch)
+	log.Printf("Shard tracker. Blocks processed: %v Elapsed time: %v sec", diff, time.Since(start).Seconds())
+
+	return nil
 }
 
 func isInShard(blockShardPrefix uint64, shard byte) bool {
@@ -214,13 +176,13 @@ func convertBlockToShardHeader(block *tlb.Block, info *ton.BlockIDExt, shard byt
 }
 
 // get shard block header for specific shard attribute with one parent
-func (c *Connection) getShardBlocksHeader(ctx context.Context, shardBlockID *ton.BlockIDExt, shard byte) (core.ShardBlockHeader, error) {
+func (c *Connection) getShardBlocksHeader(ctx context.Context, shardBlockInfo *ton.BlockIDExt, shard byte) (core.ShardBlockHeader, error) {
 	var (
 		err   error
 		block *tlb.Block
 	)
 	for {
-		block, err = c.client.GetBlockData(ctx, shardBlockID)
+		block, err = c.client.GetBlockData(ctx, shardBlockInfo)
 		if err != nil && isNotReadyError(err) {
 			continue
 		} else if err != nil {
@@ -229,7 +191,7 @@ func (c *Connection) getShardBlocksHeader(ctx context.Context, shardBlockID *ton
 		}
 		break
 	}
-	return convertBlockToShardHeader(block, shardBlockID, shard)
+	return convertBlockToShardHeader(block, shardBlockInfo, shard)
 }
 
 func isNotReadyError(err error) bool {

@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"math/big"
-	"sync"
 	"time"
 
 	"github.com/gobicycle/bicycle/audit"
@@ -24,9 +23,8 @@ type BlockScanner struct {
 	db           storage
 	blockchain   blockchain
 	shard        byte
-	tracker      blocksTracker
-	wg           *sync.WaitGroup
 	notificators []Notificator
+	blocksChan   chan *ShardBlockHeader
 }
 
 type transactions struct {
@@ -62,55 +60,48 @@ type incomeNotification struct {
 }
 
 func NewBlockScanner(
-	wg *sync.WaitGroup,
 	db storage,
-	blockchain blockchain,
+	bcClient blockchain,
 	shard byte,
-	tracker blocksTracker,
 	notificators []Notificator,
+	blocksChan chan *ShardBlockHeader,
 ) *BlockScanner {
 	t := &BlockScanner{
 		db:           db,
-		blockchain:   blockchain,
+		blockchain:   bcClient,
 		shard:        shard,
-		tracker:      tracker,
-		wg:           wg,
 		notificators: notificators,
+		blocksChan:   blocksChan,
 	}
-	t.wg.Add(1)
-	go t.Start()
 	return t
 }
 
-func (s *BlockScanner) Start() {
-	defer s.wg.Done()
+func (s *BlockScanner) Start(ctx context.Context) {
 	log.Printf("Block scanner started")
 	for {
-		log.Printf("Block scanning iteration")
-		block, exit, err := s.tracker.NextBlock()
-		if err != nil {
-			log.Errorf("get block error: %v", err)
-			continue
+		select {
+		case <-ctx.Done():
+			return
+		case block := <-s.blocksChan:
+			if block == nil {
+				continue
+			}
+			ctx, _ := context.WithTimeout(ctx, time.Second*15)
+			err := s.processBlock(ctx, *block)
+
+			if err != nil {
+				log.Errorf("block processing error: %v", err)
+			}
+			log.Printf("Block %d scanned successfuly", block.SeqNo)
 		}
-		if exit {
-			log.Printf("Block scanner stopped")
-			break
-		}
-		ctx, cancel := context.WithTimeout(context.Background(), time.Second*15)
-		err = s.processBlock(ctx, block)
-		cancel()
-		if err != nil {
-			log.Fatalf("block processing error: %v", err)
-		}
-		log.Printf("Block %d scanned successfuly", block.SeqNo)
 	}
 }
 
 func (s *BlockScanner) Stop() {
-	s.tracker.Stop()
 }
 
 func (s *BlockScanner) processBlock(ctx context.Context, block ShardBlockHeader) error {
+	log.Infof("processing block: %v", block.SeqNo)
 	txIDs, err := s.blockchain.GetTransactionIDsFromBlock(ctx, block.BlockIDExt)
 	if err != nil {
 		return err
