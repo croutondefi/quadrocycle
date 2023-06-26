@@ -1,20 +1,16 @@
-package core
+package models
 
 import (
-	"context"
 	"database/sql/driver"
 	"errors"
 	"fmt"
 	"math/big"
-	"time"
 
 	"github.com/gobicycle/bicycle/config"
 	"github.com/gofrs/uuid"
 	"github.com/shopspring/decimal"
 	"github.com/xssnick/tonutils-go/address"
-	"github.com/xssnick/tonutils-go/tlb"
 	"github.com/xssnick/tonutils-go/ton"
-	"github.com/xssnick/tonutils-go/ton/wallet"
 )
 
 const (
@@ -51,9 +47,10 @@ const (
 type WithdrawalStatus string
 
 const (
-	PendingStatus    WithdrawalStatus = "pending"
-	ProcessingStatus WithdrawalStatus = "processing"
-	ProcessedStatus  WithdrawalStatus = "processed"
+	WithdrawalStatusPending    WithdrawalStatus = "pending"
+	WithdrawalStatusProcessing WithdrawalStatus = "processing"
+	WithdrawalStatusDone       WithdrawalStatus = "done"
+	WithdrawalStatusCancelled  WithdrawalStatus = "cancelled"
 )
 
 var (
@@ -157,6 +154,7 @@ type WalletData struct {
 type WithdrawalRequest struct {
 	QueryID     string
 	UserID      string
+	Status      WithdrawalStatus
 	Currency    string
 	Amount      Coins
 	Bounceable  bool
@@ -292,46 +290,22 @@ type ShardBlockHeader struct {
 	Parent    *ton.BlockIDExt
 }
 
-type storage interface {
-	GetExternalWithdrawalTasks(ctx context.Context, limit int) ([]ExternalWithdrawalTask, error)
-	SaveTonWallet(ctx context.Context, walletData WalletData) error
-	SaveJettonWallet(ctx context.Context, ownerAddress Address, walletData WalletData, notSaveOwner bool) error
-	GetWalletType(address Address) (WalletType, bool)
-	GetOwner(address Address) *Address
-	GetWalletTypeByTonutilsAddress(address *address.Address) (WalletType, bool)
-	SaveParsedBlockData(ctx context.Context, events BlockEvents) error
-	GetTonInternalWithdrawalTasks(ctx context.Context, limit int) ([]InternalWithdrawalTask, error)
-	GetJettonInternalWithdrawalTasks(ctx context.Context, forbiddenAddresses []Address, limit int) ([]InternalWithdrawalTask, error)
-	CreateExternalWithdrawals(ctx context.Context, tasks []ExternalWithdrawalTask, extMsgUuid uuid.UUID, expiredAt time.Time) error
-	GetTonHotWalletAddress(ctx context.Context) (Address, error)
-	SetExpired(ctx context.Context) error
-	SaveInternalWithdrawalTask(ctx context.Context, task InternalWithdrawalTask, expiredAt time.Time, memo uuid.UUID) error
-	IsActualBlockData(ctx context.Context) (bool, error)
-	SaveWithdrawalRequest(ctx context.Context, w WithdrawalRequest) (int64, error)
-	IsInProgressInternalWithdrawalRequest(ctx context.Context, dest Address, currency string) (bool, error)
-	GetServiceHotWithdrawalTasks(ctx context.Context, limit int) ([]ServiceWithdrawalTask, error)
-	UpdateServiceWithdrawalRequest(ctx context.Context, t ServiceWithdrawalTask, tonAmount Coins,
-		expiredAt time.Time, filled bool) error
-	GetServiceDepositWithdrawalTasks(ctx context.Context, limit int) ([]ServiceWithdrawalTask, error)
-	GetJettonWallet(ctx context.Context, address Address) (*WalletData, bool, error)
-}
+// type blockchain interface {
+// 	GetJettonWalletAddress(ctx context.Context, ownerWallet *address.Address, jettonMaster *address.Address) (*address.Address, error)
+// 	GetTransactionIDsFromBlock(ctx context.Context, blockID *ton.BlockIDExt) ([]ton.TransactionShortInfo, error)
+// 	GetTransactionFromBlock(ctx context.Context, blockID *ton.BlockIDExt, txID ton.TransactionShortInfo) (*tlb.Transaction, error)
+// 	GenerateDefaultWallet(seed string, isHighload bool) (*wallet.Wallet, byte, uint32, error)
+// 	GetJettonBalance(ctx context.Context, address Address, blockID *ton.BlockIDExt) (*big.Int, error)
+// 	SendExternalMessage(ctx context.Context, msg *tlb.ExternalMessage) error
+// 	GetAccountCurrentState(ctx context.Context, address *address.Address) (*big.Int, tlb.AccountStatus, error)
+// 	GetLastJettonBalance(ctx context.Context, address *address.Address) (*big.Int, error)
+// 	DeployTonWallet(ctx context.Context, wallet *wallet.Wallet) error
+// }
 
-type blockchain interface {
-	GetJettonWalletAddress(ctx context.Context, ownerWallet *address.Address, jettonMaster *address.Address) (*address.Address, error)
-	GetTransactionIDsFromBlock(ctx context.Context, blockID *ton.BlockIDExt) ([]ton.TransactionShortInfo, error)
-	GetTransactionFromBlock(ctx context.Context, blockID *ton.BlockIDExt, txID ton.TransactionShortInfo) (*tlb.Transaction, error)
-	GenerateDefaultWallet(seed string, isHighload bool) (*wallet.Wallet, byte, uint32, error)
-	GetJettonBalance(ctx context.Context, address Address, blockID *ton.BlockIDExt) (*big.Int, error)
-	SendExternalMessage(ctx context.Context, msg *tlb.ExternalMessage) error
-	GetAccountCurrentState(ctx context.Context, address *address.Address) (*big.Int, tlb.AccountStatus, error)
-	GetLastJettonBalance(ctx context.Context, address *address.Address) (*big.Int, error)
-	DeployTonWallet(ctx context.Context, wallet *wallet.Wallet) error
-}
-
-type blocksTracker interface {
-	Start(context.Context)
-	Stop()
-}
+// type blocksTracker interface {
+// 	Start(context.Context)
+// 	Stop()
+// }
 
 type Notificator interface {
 	Publish(payload any) error

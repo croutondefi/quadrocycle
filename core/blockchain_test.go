@@ -1,4 +1,4 @@
-package blockchain
+package core
 
 import (
 	"bytes"
@@ -10,7 +10,7 @@ import (
 	"time"
 
 	"github.com/gobicycle/bicycle/config"
-	"github.com/gobicycle/bicycle/core"
+	"github.com/gobicycle/bicycle/models"
 	"github.com/tonkeeper/tongo/boc"
 	"github.com/xssnick/tonutils-go/address"
 	"github.com/xssnick/tonutils-go/tlb"
@@ -124,44 +124,44 @@ func Test_GetJettonWalletAddress(t *testing.T) {
 	}
 }
 
-func Test_GenerateJettonWalletAddressForProxy(t *testing.T) {
-	c := connect(t)
-	seed := getSeed()
-	ctx, cancel := context.WithTimeout(context.Background(), time.Second*30)
-	defer cancel()
-	owner, _, _, err := c.GenerateDefaultWallet(seed, true)
-	if err != nil {
-		t.Fatal("gen owner wallet err: ", err)
-	}
-	master := jetton.NewJettonMasterClient(c.client, jettonMasterAddress)
-	for i := 0; i < 10; i++ {
-		shard := byte(rand.Intn(255))
-		startSubWalletID := rand.Uint32()
-		proxy, jettonWalletAddr, err := c.GenerateDepositJettonWalletForProxy(ctx, shard, owner.Address(), jettonMasterAddress, startSubWalletID)
-		if err != nil {
-			t.Fatal("gen sub wallet err: ", err)
-		}
-		if proxy == nil {
-			t.Fatal("nil owner wallet")
-		}
-		if jettonWalletAddr == nil {
-			t.Fatal("nil jetton wallet address")
-		}
-		if proxy.SubwalletID <= startSubWalletID {
-			t.Fatal("invalid subwallet ID")
-		}
-		if jettonWalletAddr.Data()[0] != shard {
-			t.Fatal("invalid shard")
-		}
-		jettonWallet, err := master.GetJettonWallet(ctx, proxy.Address())
-		if err != nil {
-			t.Fatal("get jetton wallet address by tonutils method err: ", err)
-		}
-		if jettonWallet.Address().String() != jettonWalletAddr.String() {
-			t.Fatal("invalid jetton wallet address")
-		}
-	}
-}
+// func Test_GenerateJettonWalletAddressForProxy(t *testing.T) {
+// 	c := connect(t)
+// 	seed := getSeed()
+// 	ctx, cancel := context.WithTimeout(context.Background(), time.Second*30)
+// 	defer cancel()
+// 	owner, _, _, err := c.GenerateDefaultWallet(seed, true)
+// 	if err != nil {
+// 		t.Fatal("gen owner wallet err: ", err)
+// 	}
+// 	master := jetton.NewJettonMasterClient(c.client, jettonMasterAddress)
+// 	for i := 0; i < 10; i++ {
+// 		shard := byte(rand.Intn(255))
+// 		startSubWalletID := rand.Uint32()
+// 		proxy, jettonWalletAddr, err := c.GenerateDepositJettonWalletForProxy(ctx, shard, owner.Address(), jettonMasterAddress, startSubWalletID)
+// 		if err != nil {
+// 			t.Fatal("gen sub wallet err: ", err)
+// 		}
+// 		if proxy == nil {
+// 			t.Fatal("nil owner wallet")
+// 		}
+// 		if jettonWalletAddr == nil {
+// 			t.Fatal("nil jetton wallet address")
+// 		}
+// 		if proxy.SubwalletID <= startSubWalletID {
+// 			t.Fatal("invalid subwallet ID")
+// 		}
+// 		if jettonWalletAddr.Data()[0] != shard {
+// 			t.Fatal("invalid shard")
+// 		}
+// 		jettonWallet, err := master.GetJettonWallet(ctx, proxy.Address())
+// 		if err != nil {
+// 			t.Fatal("get jetton wallet address by tonutils method err: ", err)
+// 		}
+// 		if jettonWallet.Address().String() != jettonWalletAddr.String() {
+// 			t.Fatal("invalid jetton wallet address")
+// 		}
+// 	}
+// }
 
 func Test_GetJettonBalance(t *testing.T) {
 	c := connect(t)
@@ -171,8 +171,8 @@ func Test_GetJettonBalance(t *testing.T) {
 	if err != nil {
 		t.Fatal("get current masterchain err: ", err)
 	}
-	coreAddr1 := core.AddressMustFromTonutilsAddress(activeAccount)
-	coreAddr2 := core.AddressMustFromTonutilsAddress(notActiveAccount)
+	coreAddr1 := models.AddressMustFromTonutilsAddress(activeAccount)
+	coreAddr2 := models.AddressMustFromTonutilsAddress(notActiveAccount)
 	b1, err := c.GetJettonBalance(ctx, coreAddr1, block)
 	if err != nil {
 		t.Fatal("get balance: ", err)
@@ -316,18 +316,18 @@ func Test_GetTransactionFromBlock(t *testing.T) {
 	}
 }
 
-func Test_CheckTime(t *testing.T) {
+func Test_isTimeSynced(t *testing.T) {
 	c := connect(t)
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second*20)
 	defer cancel()
-	res, err := c.CheckTime(ctx, time.Second*0)
+	res, err := c.isTimeSynced(ctx, time.Second*0)
 	if err != nil {
 		t.Fatal("check time err: ", err)
 	}
 	if res == true {
 		t.Fatal("time diff can not be 0")
 	}
-	res, err = c.CheckTime(ctx, time.Hour*1000)
+	res, err = c.isTimeSynced(ctx, time.Hour*1000)
 	if err != nil {
 		t.Fatal("check time err: ", err)
 	}

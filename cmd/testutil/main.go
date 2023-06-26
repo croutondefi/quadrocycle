@@ -7,8 +7,8 @@ import (
 	"os"
 	"time"
 
-	"github.com/gobicycle/bicycle/blockchain"
 	"github.com/gobicycle/bicycle/config"
+	"github.com/gobicycle/bicycle/core"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"github.com/xssnick/tonutils-go/address"
 )
@@ -49,7 +49,7 @@ func main() {
 		log.Fatalf("invalid HOT_WALLET_B env var")
 	}
 
-	bcClient, err := blockchain.NewConnection(config.Config.LiteServerConfigURL, config.Config.DefaultWalletVersion)
+	bcClient, err := core.NewConnection(config.Config.LiteServerConfigURL, config.Config.DefaultWalletVersion)
 	if err != nil {
 		log.Fatalf("blockchain connection error: %v", err)
 	}

@@ -9,6 +9,8 @@ import (
 
 	"github.com/gobicycle/bicycle/audit"
 	"github.com/gobicycle/bicycle/config"
+	"github.com/gobicycle/bicycle/db"
+	"github.com/gobicycle/bicycle/models"
 	"github.com/gofrs/uuid"
 	log "github.com/sirupsen/logrus"
 	"github.com/xssnick/tonutils-go/address"
@@ -17,8 +19,8 @@ import (
 )
 
 type WithdrawalsProcessor struct {
-	db               storage
-	bc               blockchain
+	repo             db.Repository
+	bc               Blockchain
 	wallets          Wallets
 	coldWallet       *address.Address
 	gracefulShutdown atomic.Bool
@@ -26,30 +28,30 @@ type WithdrawalsProcessor struct {
 
 type internalWithdrawal struct {
 	Memo uuid.UUID
-	Task InternalWithdrawalTask
+	Task models.InternalWithdrawalTask
 }
 
 type serviceWithdrawal struct {
-	TonAmount Coins
+	TonAmount models.Coins
 	Filled    bool
-	Task      ServiceWithdrawalTask
+	Task      models.ServiceWithdrawalTask
 }
 
 type withdrawals struct {
 	Messages []*wallet.Message
-	External []ExternalWithdrawalTask
+	External []models.ExternalWithdrawalTask
 	Internal []internalWithdrawal
 	Service  []serviceWithdrawal
 }
 
 func NewWithdrawalsProcessor(
-	db storage,
-	bc blockchain,
+	repo db.Repository,
+	bc Blockchain,
 	wallets Wallets,
 	coldWallet *address.Address,
 ) *WithdrawalsProcessor {
 	w := &WithdrawalsProcessor{
-		db:         db,
+		repo:       repo,
 		bc:         bc,
 		wallets:    wallets,
 		coldWallet: coldWallet,
@@ -97,18 +99,18 @@ func (p *WithdrawalsProcessor) startWithdrawalsProcessor() {
 		if err != nil {
 			log.Fatalf("get external message uuid error: %v\n", err)
 		}
-		err = p.db.CreateExternalWithdrawals(ctx, w.External, info.UUID, info.TTL)
+		err = p.repo.CreateExternalWithdrawals(ctx, w.External, info.UUID, info.TTL)
 		if err != nil {
 			log.Fatalf("save external withdrawals error: %v\n", err)
 		}
 		for _, sw := range w.Service {
-			err = p.db.UpdateServiceWithdrawalRequest(ctx, sw.Task, sw.TonAmount, info.TTL, sw.Filled)
+			err = p.repo.UpdateServiceWithdrawalRequest(ctx, sw.Task, sw.TonAmount, info.TTL, sw.Filled)
 			if err != nil {
 				log.Fatalf("update service withdrawal error: %v\n", err)
 			}
 		}
 		for _, iw := range w.Internal {
-			err = p.db.SaveInternalWithdrawalTask(ctx, iw.Task, info.TTL, iw.Memo)
+			err = p.repo.SaveInternalWithdrawalTask(ctx, iw.Task, info.TTL, iw.Memo)
 			if err != nil {
 				log.Fatalf("save internal withdrawal error: %v\n", err)
 			}
@@ -123,7 +125,7 @@ func (p *WithdrawalsProcessor) startWithdrawalsProcessor() {
 
 func (p *WithdrawalsProcessor) buildWithdrawalMessages(ctx context.Context) (withdrawals, error) {
 	var (
-		usedAddresses []Address
+		usedAddresses []models.Address
 		res           withdrawals
 	)
 
@@ -132,12 +134,12 @@ func (p *WithdrawalsProcessor) buildWithdrawalMessages(ctx context.Context) (wit
 		return withdrawals{}, fmt.Errorf("get hot wallet balance error: %s", err.Error())
 	}
 
-	serviceTasks, err := p.db.GetServiceHotWithdrawalTasks(ctx, 250)
+	serviceTasks, err := p.repo.GetServiceHotWithdrawalTasks(ctx, 250)
 	if err != nil {
 		return withdrawals{}, err
 	}
 	for _, t := range serviceTasks {
-		if decreaseBalances(balances, TonSymbol, config.JettonTransferTonAmount.NanoTON()) {
+		if decreaseBalances(balances, models.TonSymbol, config.JettonTransferTonAmount.NanoTON()) {
 			continue
 		}
 		msg, w, err := p.buildServiceWithdrawalMessage(ctx, t)
@@ -154,7 +156,7 @@ func (p *WithdrawalsProcessor) buildWithdrawalMessages(ctx context.Context) (wit
 			res.Service = append(res.Service, w)
 		} else {
 			// save rejected service withdrawals
-			err = p.db.UpdateServiceWithdrawalRequest(ctx, w.Task, w.TonAmount, time.Now(), w.Filled)
+			err = p.repo.UpdateServiceWithdrawalRequest(ctx, w.Task, w.TonAmount, time.Now(), w.Filled)
 			if err != nil {
 				return withdrawals{}, err
 			}
@@ -164,7 +166,7 @@ func (p *WithdrawalsProcessor) buildWithdrawalMessages(ctx context.Context) (wit
 	// `internalTask.From` address is the address of deposit Jetton wallet
 	// the dest address for uniqueness check is proxy contract address
 	// so the proxy contract address must be deduplicated with usedAddresses in db query
-	internalTasks, err := p.db.GetJettonInternalWithdrawalTasks(ctx, usedAddresses, 250)
+	internalTasks, err := p.repo.GetJettonInternalWithdrawalTasks(ctx, usedAddresses, 250)
 	if err != nil {
 		return withdrawals{}, err
 	}
@@ -172,7 +174,7 @@ func (p *WithdrawalsProcessor) buildWithdrawalMessages(ctx context.Context) (wit
 		if len(res.Messages) > 250 {
 			break
 		}
-		if decreaseBalances(balances, TonSymbol, config.JettonTransferTonAmount.NanoTON()) {
+		if decreaseBalances(balances, models.TonSymbol, config.JettonTransferTonAmount.NanoTON()) {
 			continue
 		}
 		msg, memo, err := p.buildJettonInternalWithdrawalMessage(ctx, t)
@@ -189,7 +191,7 @@ func (p *WithdrawalsProcessor) buildWithdrawalMessages(ctx context.Context) (wit
 	}
 
 	// not filter usedAddresses by DB and perform internal addresses checking and logging
-	externalTasks, err := p.db.GetExternalWithdrawalTasks(ctx, 250)
+	externalTasks, err := p.repo.GetExternalWithdrawalTasks(ctx, 250)
 	if err != nil {
 		return withdrawals{}, err
 	}
@@ -197,9 +199,9 @@ func (p *WithdrawalsProcessor) buildWithdrawalMessages(ctx context.Context) (wit
 		if len(res.Messages) > 250 {
 			break
 		}
-		t, ok := p.db.GetWalletType(w.Destination)
+		t, ok := p.repo.GetWalletType(w.Destination)
 		if ok {
-			audit.Log(audit.Warning, string(TonHotWallet), ExternalWithdrawalEvent,
+			audit.Log(audit.Warning, string(models.TonHotWallet), models.ExternalWithdrawalEvent,
 				fmt.Sprintf("withdrawal task to internal %s address %s", t, w.Destination.ToUserFormat()))
 			continue
 		}
@@ -219,7 +221,7 @@ func (p *WithdrawalsProcessor) getHotWalletBalances(ctx context.Context) (map[st
 	if err != nil {
 		return nil, err
 	}
-	res[TonSymbol] = balance
+	res[models.TonSymbol] = balance
 	for cur, w := range p.wallets.JettonHotWallets {
 		balance, err := p.bc.GetLastJettonBalance(ctx, w.Address)
 		if err != nil {
@@ -232,25 +234,25 @@ func (p *WithdrawalsProcessor) getHotWalletBalances(ctx context.Context) (map[st
 
 // decreaseBalances returns true if balance < amount
 func decreaseBalances(balances map[string]*big.Int, currency string, amount *big.Int) bool {
-	if currency == TonSymbol {
-		if balances[TonSymbol].Cmp(amount) == -1 { // balance < amount
+	if currency == models.TonSymbol {
+		if balances[models.TonSymbol].Cmp(amount) == -1 { // balance < amount
 			return true
 		}
-		balances[TonSymbol].Sub(balances[TonSymbol], amount)
+		balances[models.TonSymbol].Sub(balances[models.TonSymbol], amount)
 		return false
 	}
 	if balances[currency].Cmp(amount) == -1 || // balance < amount
-		balances[TonSymbol].Cmp(config.JettonTransferTonAmount.NanoTON()) == -1 { // balance < JettonTransferTonAmount
+		balances[models.TonSymbol].Cmp(config.JettonTransferTonAmount.NanoTON()) == -1 { // balance < JettonTransferTonAmount
 		return true
 	}
 	balances[currency].Sub(balances[currency], amount)
-	balances[TonSymbol].Sub(balances[TonSymbol], config.JettonTransferTonAmount.NanoTON())
+	balances[models.TonSymbol].Sub(balances[models.TonSymbol], config.JettonTransferTonAmount.NanoTON())
 	return false
 }
 
 func (p *WithdrawalsProcessor) buildJettonInternalWithdrawalMessage(
 	ctx context.Context,
-	task InternalWithdrawalTask,
+	task models.InternalWithdrawalTask,
 ) (
 	[]*wallet.Message,
 	uuid.UUID,
@@ -285,17 +287,17 @@ func (p *WithdrawalsProcessor) buildJettonInternalWithdrawalMessage(
 
 func (p *WithdrawalsProcessor) buildServiceWithdrawalMessage(
 	ctx context.Context,
-	task ServiceWithdrawalTask,
+	task models.ServiceWithdrawalTask,
 ) (
 	[]*wallet.Message,
 	serviceWithdrawal,
 	error,
 ) {
-	t, ok := p.db.GetWalletType(task.From)
-	if !ok || !(t == JettonOwner || t == TonDepositWallet) {
+	t, ok := p.repo.GetWalletType(task.From)
+	if !ok || !(t == models.JettonOwner || t == models.TonDepositWallet) {
 		return nil, serviceWithdrawal{}, fmt.Errorf("invalid service withdrawal address")
 	}
-	if t == TonDepositWallet { // only fill TON deposit to send Jetton transfer message later
+	if t == models.TonDepositWallet { // only fill TON deposit to send Jetton transfer message later
 		return p.buildServiceFilling(ctx, task)
 	}
 
@@ -308,7 +310,7 @@ func (p *WithdrawalsProcessor) buildServiceWithdrawalMessage(
 
 func (p *WithdrawalsProcessor) buildServiceFilling(
 	ctx context.Context,
-	task ServiceWithdrawalTask,
+	task models.ServiceWithdrawalTask,
 ) (
 	[]*wallet.Message,
 	serviceWithdrawal,
@@ -329,19 +331,19 @@ func (p *WithdrawalsProcessor) buildServiceFilling(
 	}
 
 	if jettonBalance.Cmp(big.NewInt(0)) == 0 {
-		audit.Log(audit.Warning, string(TonDepositWallet), ServiceWithdrawalEvent,
+		audit.Log(audit.Warning, string(models.TonDepositWallet), models.ServiceWithdrawalEvent,
 			fmt.Sprintf("zero balance of Jettons %s on TON deposit address %s",
 				task.JettonMaster.ToTonutilsAddressStd(0).String(),
-				TonutilsAddressToUserFormat(deposit)))
+				models.TonutilsAddressToUserFormat(deposit)))
 		return nil, serviceWithdrawal{
-			TonAmount: ZeroCoins(),
+			TonAmount: models.ZeroCoins(),
 			Task:      task,
 		}, nil
 	}
 	msg := buildTonFillMessage(deposit, config.JettonTransferTonAmount, task.Memo)
-	task.JettonAmount = NewCoins(jettonBalance)
+	task.JettonAmount = models.NewCoins(jettonBalance)
 	return []*wallet.Message{msg}, serviceWithdrawal{
-		TonAmount: ZeroCoins(),
+		TonAmount: models.ZeroCoins(),
 		Task:      task,
 		Filled:    true,
 	}, nil
@@ -349,7 +351,7 @@ func (p *WithdrawalsProcessor) buildServiceFilling(
 
 func (p *WithdrawalsProcessor) buildServiceTonWithdrawal(
 	ctx context.Context,
-	task ServiceWithdrawalTask,
+	task models.ServiceWithdrawalTask,
 ) (
 	[]*wallet.Message,
 	serviceWithdrawal,
@@ -364,12 +366,12 @@ func (p *WithdrawalsProcessor) buildServiceTonWithdrawal(
 		return nil, serviceWithdrawal{}, err
 	}
 	res := serviceWithdrawal{
-		TonAmount: NewCoins(tonBalance),
+		TonAmount: models.NewCoins(tonBalance),
 		Task:      task,
 	}
 	if tonBalance.Cmp(big.NewInt(0)) == 0 {
-		audit.Log(audit.Warning, string(JettonOwner), ServiceWithdrawalEvent,
-			fmt.Sprintf("zero balance of TONs on proxy address %s", TonutilsAddressToUserFormat(proxy.address)))
+		audit.Log(audit.Warning, string(models.JettonOwner), models.ServiceWithdrawalEvent,
+			fmt.Sprintf("zero balance of TONs on proxy address %s", models.TonutilsAddressToUserFormat(proxy.address)))
 		return nil, res, nil
 	}
 	msg := buildJettonProxyServiceTonWithdrawalMessage(*proxy, p.wallets.TonHotWallet.Address(), task.Memo)
@@ -378,7 +380,7 @@ func (p *WithdrawalsProcessor) buildServiceTonWithdrawal(
 
 func (p *WithdrawalsProcessor) buildServiceJettonWithdrawal(
 	ctx context.Context,
-	task ServiceWithdrawalTask,
+	task models.ServiceWithdrawalTask,
 ) (
 	[]*wallet.Message,
 	serviceWithdrawal,
@@ -392,13 +394,13 @@ func (p *WithdrawalsProcessor) buildServiceJettonWithdrawal(
 	if err != nil {
 		return nil, serviceWithdrawal{}, err
 	}
-	t, ok := p.db.GetWalletTypeByTonutilsAddress(jettonWallet)
+	t, ok := p.repo.GetWalletTypeByTonutilsAddress(jettonWallet)
 	if ok {
-		audit.Log(audit.Warning, string(JettonOwner), ServiceWithdrawalEvent,
+		audit.Log(audit.Warning, string(models.JettonOwner), models.ServiceWithdrawalEvent,
 			fmt.Sprintf("service withdrawal from known internal %s address %s rejected",
-				t, TonutilsAddressToUserFormat(jettonWallet)))
+				t, models.TonutilsAddressToUserFormat(jettonWallet)))
 		return nil, serviceWithdrawal{
-			TonAmount: ZeroCoins(),
+			TonAmount: models.ZeroCoins(),
 			Task:      task,
 		}, nil
 	}
@@ -409,18 +411,18 @@ func (p *WithdrawalsProcessor) buildServiceJettonWithdrawal(
 	}
 
 	if jettonBalance.Cmp(big.NewInt(0)) == 0 {
-		audit.Log(audit.Warning, string(JettonOwner), ServiceWithdrawalEvent,
+		audit.Log(audit.Warning, string(models.JettonOwner), models.ServiceWithdrawalEvent,
 			fmt.Sprintf("zero %s Jetton balance on proxy address %s",
 				task.JettonMaster.ToTonutilsAddressStd(0).String(),
-				TonutilsAddressToUserFormat(proxy.address)))
+				models.TonutilsAddressToUserFormat(proxy.address)))
 		return nil, serviceWithdrawal{
-			TonAmount: ZeroCoins(),
+			TonAmount: models.ZeroCoins(),
 			Task:      task,
 		}, nil
 	}
-	task.JettonAmount = NewCoins(jettonBalance)
+	task.JettonAmount = models.NewCoins(jettonBalance)
 	res := serviceWithdrawal{
-		TonAmount: ZeroCoins(),
+		TonAmount: models.ZeroCoins(),
 		Task:      task,
 	}
 
@@ -435,8 +437,8 @@ func (p *WithdrawalsProcessor) buildServiceJettonWithdrawal(
 	return []*wallet.Message{msg}, res, nil
 }
 
-func (p *WithdrawalsProcessor) buildExternalWithdrawalMessage(wt ExternalWithdrawalTask) *wallet.Message {
-	if wt.Currency == TonSymbol {
+func (p *WithdrawalsProcessor) buildExternalWithdrawalMessage(wt models.ExternalWithdrawalTask) *wallet.Message {
+	if wt.Currency == models.TonSymbol {
 		return BuildTonWithdrawalMessage(wt)
 	}
 	jw := p.wallets.JettonHotWallets[wt.Currency]
@@ -452,9 +454,9 @@ func (p *WithdrawalsProcessor) startExpirationProcessor() {
 			break
 		}
 		ctx, cancel := context.WithTimeout(context.Background(), time.Second*3) // must be < ExpirationProcessorPeriod
-		err := p.db.SetExpired(ctx)
+		err := p.repo.SetExpired(ctx)
 		if err != nil {
-			log.Fatalf("set expired withdrawals error: %v", err)
+			log.Errorf("set expired withdrawals error: %v", err)
 		}
 		cancel()
 		time.Sleep(config.ExpirationProcessorPeriod)
@@ -470,26 +472,26 @@ func (p *WithdrawalsProcessor) startInternalTonWithdrawalsProcessor() {
 			break
 		}
 		ctx, cancel := context.WithTimeout(context.Background(), time.Second*25) // must be < InternalWithdrawalPeriod
-		serviceTasks, err := p.db.GetServiceDepositWithdrawalTasks(ctx, 5)
+		serviceTasks, err := p.repo.GetServiceDepositWithdrawalTasks(ctx, 5)
 		if err != nil {
-			log.Fatalf("get service withdrawal tasks error: %v", err)
+			log.Errorf("get service withdrawal tasks error: %v", err)
 		}
 		for _, task := range serviceTasks {
 			err = p.serviceWithdrawJettons(ctx, task)
 			if err != nil {
-				log.Fatalf("Jettons service internal withdrawal error: %v", err)
+				log.Errorf("Jettons service internal withdrawal error: %v", err)
 			}
 			time.Sleep(time.Millisecond * 50)
 		}
 
-		internalTasks, err := p.db.GetTonInternalWithdrawalTasks(ctx, 40) // context limitation
+		internalTasks, err := p.repo.GetTonInternalWithdrawalTasks(ctx, 40) // context limitation
 		if err != nil {
 			log.Fatalf("get internal withdrawal tasks error: %v", err)
 		}
 		for _, task := range internalTasks {
 			err = p.withdrawTONsFromDeposit(ctx, task)
 			if err != nil {
-				log.Fatalf("TONs internal withdrawal error: %v", err)
+				log.Errorf("TONs internal withdrawal error: %v", err)
 			}
 			time.Sleep(time.Millisecond * 50)
 		}
@@ -498,7 +500,7 @@ func (p *WithdrawalsProcessor) startInternalTonWithdrawalsProcessor() {
 	}
 }
 
-func (p *WithdrawalsProcessor) withdrawTONsFromDeposit(ctx context.Context, task InternalWithdrawalTask) error {
+func (p *WithdrawalsProcessor) withdrawTONsFromDeposit(ctx context.Context, task models.InternalWithdrawalTask) error {
 	subwallet, err := p.wallets.TonBasicWallet.GetSubwallet(task.SubwalletID)
 	if err != nil {
 		return err
@@ -518,7 +520,7 @@ func (p *WithdrawalsProcessor) withdrawTONsFromDeposit(ctx context.Context, task
 		if err != nil {
 			return err
 		}
-		err = p.db.SaveInternalWithdrawalTask(ctx, task, time.Now().Add(config.ExternalMessageLifetime), memo)
+		err = p.repo.SaveInternalWithdrawalTask(ctx, task, time.Now().Add(config.ExternalMessageLifetime), memo)
 		if err != nil {
 			return err
 		}
@@ -526,7 +528,7 @@ func (p *WithdrawalsProcessor) withdrawTONsFromDeposit(ctx context.Context, task
 		// should be very close since the withdrawal occurs immediately
 		err = WithdrawTONs(ctx, subwallet, p.wallets.TonHotWallet, memo.String())
 		if err != nil {
-			audit.Log(audit.Info, string(TonDepositWallet), InternalWithdrawalEvent,
+			audit.Log(audit.Info, string(models.TonDepositWallet), models.InternalWithdrawalEvent,
 				fmt.Sprintf("TONs internal withdrawal from deposit %s error: %s",
 					task.From.ToUserFormat(), err.Error()))
 		}
@@ -534,7 +536,7 @@ func (p *WithdrawalsProcessor) withdrawTONsFromDeposit(ctx context.Context, task
 	return nil
 }
 
-func (p *WithdrawalsProcessor) serviceWithdrawJettons(ctx context.Context, task ServiceWithdrawalTask) error {
+func (p *WithdrawalsProcessor) serviceWithdrawJettons(ctx context.Context, task models.ServiceWithdrawalTask) error {
 	subwallet, err := p.wallets.TonBasicWallet.GetSubwallet(task.SubwalletID)
 	if err != nil {
 		return err
@@ -555,7 +557,7 @@ func (p *WithdrawalsProcessor) serviceWithdrawJettons(ctx context.Context, task 
 		return err
 	}
 
-	err = p.db.UpdateServiceWithdrawalRequest(ctx, task, ZeroCoins(),
+	err = p.repo.UpdateServiceWithdrawalRequest(ctx, task, models.ZeroCoins(),
 		time.Now().Add(config.ExternalMessageLifetime), false)
 	if err != nil {
 		return err
@@ -566,7 +568,7 @@ func (p *WithdrawalsProcessor) serviceWithdrawJettons(ctx context.Context, task 
 		task.JettonAmount, task.Memo.String()) // zero forward TON amount to prevent notify message invoking
 	if err != nil {
 		log.Errorf("Jettons service withdrawal error: %v", err)
-		audit.Log(audit.Info, string(TonDepositWallet), ServiceWithdrawalEvent,
+		audit.Log(audit.Info, string(models.TonDepositWallet), models.ServiceWithdrawalEvent,
 			fmt.Sprintf("Jettons service withdrawal from deposit %s error: %s",
 				task.From.ToUserFormat(), err.Error()))
 	}
@@ -580,7 +582,7 @@ func (p *WithdrawalsProcessor) waitSync() {
 			break
 		}
 		ctx, cancel := context.WithTimeout(context.Background(), time.Second*2)
-		isSynced, err := p.db.IsActualBlockData(ctx)
+		isSynced, err := p.repo.IsActualBlockData(ctx)
 		if err != nil {
 			log.Fatalf("check sync error: %v", err)
 		}
@@ -602,14 +604,14 @@ func (p *WithdrawalsProcessor) makeColdWalletWithdrawals(ctx context.Context) er
 	if err != nil {
 		return err
 	}
-	dest := AddressMustFromTonutilsAddress(p.coldWallet)
+	dest := models.AddressMustFromTonutilsAddress(p.coldWallet)
 
 	for cur, jw := range p.wallets.JettonHotWallets {
-		inProgress, err := p.db.IsInProgressInternalWithdrawalRequest(ctx, dest, cur)
+		status, err := p.repo.GetInternalWithdrawalStatus(ctx, dest, cur)
 		if err != nil {
 			return err
 		}
-		if inProgress {
+		if status == models.WithdrawalStatusProcessing {
 			continue
 		}
 		jettonBalance, err := p.bc.GetLastJettonBalance(ctx, jw.Address)
@@ -626,26 +628,26 @@ func (p *WithdrawalsProcessor) makeColdWalletWithdrawals(ctx context.Context) er
 		}
 		jettonAmount.Sub(jettonBalance, config.Config.Jettons[cur].HotWalletMaxCutoff)
 		tonBalance.Sub(tonBalance, config.JettonTransferTonAmount.NanoTON())
-		req := WithdrawalRequest{
+		req := models.WithdrawalRequest{
 			Currency:    jw.Currency,
-			Amount:      NewCoins(jettonAmount),
+			Amount:      models.NewCoins(jettonAmount),
 			Bounceable:  true,
 			Destination: dest,
 			IsInternal:  true,
 			QueryID:     u.String(),
 		}
-		_, err = p.db.SaveWithdrawalRequest(ctx, req)
+		_, err = p.repo.CreateWithdrawalRequest(ctx, req)
 		if err != nil {
 			return err
 		}
 		log.Infof("%v withdrawal to cold wallet saved", cur)
 	}
 
-	inProgress, err := p.db.IsInProgressInternalWithdrawalRequest(ctx, dest, TonSymbol)
+	status, err := p.repo.GetInternalWithdrawalStatus(ctx, dest, models.TonSymbol)
 	if err != nil {
 		return err
 	}
-	if inProgress {
+	if status == models.WithdrawalStatusProcessing {
 		return nil
 	}
 
@@ -659,16 +661,16 @@ func (p *WithdrawalsProcessor) makeColdWalletWithdrawals(ctx context.Context) er
 		return err
 	}
 	tonAmount.Sub(tonBalance, config.Config.Ton.HotWalletMax)
-	req := WithdrawalRequest{
-		Currency:    TonSymbol,
-		Amount:      NewCoins(tonAmount),
+	req := models.WithdrawalRequest{
+		Currency:    models.TonSymbol,
+		Amount:      models.NewCoins(tonAmount),
 		Bounceable:  p.coldWallet.IsBounceable(),
 		Destination: dest,
 		IsInternal:  true,
 		QueryID:     u.String(),
 	}
 
-	_, err = p.db.SaveWithdrawalRequest(ctx, req)
+	_, err = p.repo.CreateWithdrawalRequest(ctx, req)
 	if err != nil {
 		return err
 	}

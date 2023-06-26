@@ -78,8 +78,7 @@ CREATE TABLE IF NOT EXISTS payments.withdrawal_requests
                      constraint withdrawal_requests_pk
                      primary key,
     bounceable       bool  not null,
-    processing       bool not null default false,
-    processed        bool not null default false,
+    status           text not null,
     is_internal      bool default false,
     amount           numeric not null,
     user_id          text not null,

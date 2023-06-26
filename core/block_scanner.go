@@ -8,11 +8,10 @@ import (
 
 	"github.com/gobicycle/bicycle/audit"
 	"github.com/gobicycle/bicycle/config"
+	"github.com/gobicycle/bicycle/db"
+	"github.com/gobicycle/bicycle/models"
 	"github.com/gofrs/uuid"
 	log "github.com/sirupsen/logrus"
-	"github.com/tonkeeper/tongo"
-	"github.com/tonkeeper/tongo/boc"
-	tongoTlb "github.com/tonkeeper/tongo/tlb"
 	"github.com/xssnick/tonutils-go/address"
 	"github.com/xssnick/tonutils-go/tlb"
 	"github.com/xssnick/tonutils-go/ton"
@@ -20,27 +19,27 @@ import (
 )
 
 type BlockScanner struct {
-	db           storage
-	blockchain   blockchain
+	repo         db.Repository
+	blockchain   Blockchain
 	shard        byte
-	notificators []Notificator
-	blocksChan   chan *ShardBlockHeader
+	notificators []models.Notificator
+	blocksChan   chan *models.ShardBlockHeader
 }
 
 type transactions struct {
-	Address      Address
-	WalletType   WalletType
+	Address      models.Address
+	WalletType   models.WalletType
 	Transactions []*tlb.Transaction
 }
 
 type jettonTransferNotificationMsg struct {
-	Amount  Coins
+	Amount  models.Coins
 	Sender  *address.Address
 	Comment string
 }
 
 type JettonTransferMsg struct {
-	Amount      Coins
+	Amount      models.Coins
 	Destination *address.Address
 	Comment     string
 }
@@ -60,14 +59,14 @@ type incomeNotification struct {
 }
 
 func NewBlockScanner(
-	db storage,
-	bcClient blockchain,
+	repo db.Repository,
+	bcClient Blockchain,
 	shard byte,
-	notificators []Notificator,
-	blocksChan chan *ShardBlockHeader,
+	notificators []models.Notificator,
+	blocksChan chan *models.ShardBlockHeader,
 ) *BlockScanner {
 	t := &BlockScanner{
-		db:           db,
+		repo:         repo,
 		blockchain:   bcClient,
 		shard:        shard,
 		notificators: notificators,
@@ -100,7 +99,7 @@ func (s *BlockScanner) Start(ctx context.Context) {
 func (s *BlockScanner) Stop() {
 }
 
-func (s *BlockScanner) processBlock(ctx context.Context, block ShardBlockHeader) error {
+func (s *BlockScanner) processBlock(ctx context.Context, block models.ShardBlockHeader) error {
 	log.Infof("processing block: %v", block.SeqNo)
 	txIDs, err := s.blockchain.GetTransactionIDsFromBlock(ctx, block.BlockIDExt)
 	if err != nil {
@@ -118,10 +117,10 @@ func (s *BlockScanner) processBlock(ctx context.Context, block ShardBlockHeader)
 	if err != nil {
 		return err
 	}
-	return s.db.SaveParsedBlockData(ctx, e)
+	return s.repo.SaveParsedBlockData(ctx, e)
 }
 
-func (s *BlockScanner) pushNotifications(e BlockEvents) error {
+func (s *BlockScanner) pushNotifications(e models.BlockEvents) error {
 	if len(s.notificators) == 0 {
 		return nil
 	}
@@ -145,14 +144,14 @@ func (s *BlockScanner) pushNotifications(e BlockEvents) error {
 }
 
 func (s *BlockScanner) pushNotification(
-	addr Address,
-	amount Coins,
+	addr models.Address,
+	amount models.Coins,
 	timestamp uint32,
 	from []byte,
 	fromWorkchain *int32,
 	comment string,
 ) error {
-	owner := s.db.GetOwner(addr)
+	owner := s.repo.GetOwner(addr)
 	if owner != nil {
 		addr = *owner
 	}
@@ -185,13 +184,13 @@ func (s *BlockScanner) filterTXs(
 ) (
 	[]transactions, error,
 ) {
-	txMap := make(map[Address][]*tlb.Transaction)
+	txMap := make(map[models.Address][]*tlb.Transaction)
 	for _, id := range ids {
-		a, err := AddressFromBytes(id.Account) // must be int256 for lite api
+		a, err := models.AddressFromBytes(id.Account) // must be int256 for lite api
 		if err != nil {
 			return nil, err
 		}
-		_, ok := s.db.GetWalletType(a)
+		_, ok := s.repo.GetWalletType(a)
 		if ok {
 			tx, err := s.blockchain.GetTransactionFromBlock(ctx, blockID, id)
 			if err != nil {
@@ -202,55 +201,75 @@ func (s *BlockScanner) filterTXs(
 	}
 	var res []transactions
 	for a, txs := range txMap {
-		wType, _ := s.db.GetWalletType(a)
+		wType, _ := s.repo.GetWalletType(a)
 		res = append(res, transactions{a, wType, txs})
 	}
 	return res, nil
 }
 
-func checkTxForSuccess(tx *tlb.Transaction) (bool, error) {
-	descData := tx.Description.ToBOC()
-	c, err := boc.DeserializeBoc(descData)
-	if err != nil {
-		return false, err
+func isTxSuccessful(tx *tlb.Transaction) bool {
+	switch v := tx.Description.Description.(type) {
+	case tlb.TransactionDescriptionOrdinary:
+		fmt.Println(v)
+		// if v.BouncePhase.Phase {
+		// 	return false
+		// }
+		// cph := v.ComputePhase.Phase
+		// cph.Phase
+		// if cph.SumType == "TrPhaseComputeSkipped" && cph.TrPhaseComputeSkipped.Reason != ComputeSkipReasonNoState {
+		// 	return false
+		// }
+		// if cph.SumType == "TrPhaseComputeVm" && (!cph.TrPhaseComputeVm.Success || (cph.TrPhaseComputeVm.Vm.ExitCode != 0 && cph.TrPhaseComputeVm.Vm.ExitCode != 1)) {
+		// 	return false
+		// }
+		// if v.ActionPhase && !v.Action.Value.Value.Success {
+		// 	return false
+		// }
+		return true
+	case tlb.TransactionDescriptionTickTock:
+		// cph := v.ComputePhase
+		// if cph.SumType == "TrPhaseComputeSkipped" && cph.TrPhaseComputeSkipped.Reason != ComputeSkipReasonNoState {
+		// 	return false
+		// }
+		// if cph.SumType == "TrPhaseComputeVm" && (!cph.TrPhaseComputeVm.Success || (cph.TrPhaseComputeVm.Vm.ExitCode != 0 && cph.TrPhaseComputeVm.Vm.ExitCode != 1)) {
+		// 	return false
+		// }
+		// if t.Action.Exists && !t.Action.Value.Value.Success {
+		// 	return false
+		// }
+		return true
+	default:
+		return true //todo: add logic for other types
 	}
-	var desc tongoTlb.TransactionDescr
-	err = tongoTlb.Unmarshal(c[0], &desc)
-	if err != nil {
-		return false, err
-	}
-	var fakeTx tongo.Transaction // need for check tx success via tongo
-	fakeTx.Description = desc
-	return fakeTx.IsSuccess(), nil
 }
 
 func (s *BlockScanner) processTXs(
 	ctx context.Context,
 	txs []transactions,
-	block ShardBlockHeader,
+	block models.ShardBlockHeader,
 ) (
-	BlockEvents, error,
+	models.BlockEvents, error,
 ) {
-	blockEvents := BlockEvents{Block: block}
+	blockEvents := models.BlockEvents{Block: block}
 	for _, t := range txs {
 		switch t.WalletType {
 		// TODO: check order of Lt for different accounts (it is important for intermediate tx Lt)
-		case TonHotWallet:
+		case models.TonHotWallet:
 			hotWalletEvents, err := s.processTonHotWalletTXs(t)
 			if err != nil {
-				return BlockEvents{}, err
+				return models.BlockEvents{}, err
 			}
 			blockEvents.Append(hotWalletEvents)
-		case TonDepositWallet:
+		case models.TonDepositWallet:
 			tonDepositEvents, err := s.processTonDepositWalletTXs(t)
 			if err != nil {
-				return BlockEvents{}, err
+				return models.BlockEvents{}, err
 			}
 			blockEvents.Append(tonDepositEvents)
-		case JettonDepositWallet:
+		case models.JettonDepositWallet:
 			jettonDepositEvents, err := s.processJettonDepositWalletTXs(ctx, t, block.BlockIDExt, block.Parent)
 			if err != nil {
-				return BlockEvents{}, err
+				return models.BlockEvents{}, err
 			}
 			blockEvents.Append(jettonDepositEvents)
 		}
@@ -258,54 +277,50 @@ func (s *BlockScanner) processTXs(
 	return blockEvents, nil
 }
 
-func (s *BlockScanner) processTonHotWalletTXs(txs transactions) (Events, error) {
-	var events Events
+func (s *BlockScanner) processTonHotWalletTXs(txs transactions) (models.Events, error) {
+	var events models.Events
 
 	for _, tx := range txs.Transactions {
 
 		if tx.IO.In == nil { // impossible for standard highload TON wallet
-			audit.LogTX(audit.Error, string(TonHotWallet), tx.Hash, "transaction without in message")
-			return Events{}, fmt.Errorf("anomalous behavior of the TON hot wallet")
+			audit.LogTX(audit.Error, string(models.TonHotWallet), tx.Hash, "transaction without in message")
+			return models.Events{}, fmt.Errorf("anomalous behavior of the TON hot wallet")
 		}
 
 		switch tx.IO.In.MsgType {
 		case tlb.MsgTypeExternalIn:
 			e, err := s.processTonHotWalletExternalInMsg(tx)
 			if err != nil {
-				return Events{}, err
+				return models.Events{}, err
 			}
 			events.Append(e)
 		case tlb.MsgTypeInternal:
 			e, err := s.processTonHotWalletInternalInMsg(tx)
 			if err != nil {
-				return Events{}, err
+				return models.Events{}, err
 			}
 			events.Append(e)
 		default:
-			audit.LogTX(audit.Error, string(TonHotWallet), tx.Hash,
+			audit.LogTX(audit.Error, string(models.TonHotWallet), tx.Hash,
 				"transaction in message must be internal or external in")
-			return Events{}, fmt.Errorf("anomalous behavior of the TON hot wallet")
+			return models.Events{}, fmt.Errorf("anomalous behavior of the TON hot wallet")
 		}
 	}
 	return events, nil
 }
 
-func (s *BlockScanner) processTonDepositWalletTXs(txs transactions) (Events, error) {
-	var events Events
+func (s *BlockScanner) processTonDepositWalletTXs(txs transactions) (models.Events, error) {
+	var events models.Events
 
 	for _, tx := range txs.Transactions {
 
 		if tx.IO.In == nil { // impossible for standard TON V3 wallet
-			audit.LogTX(audit.Error, string(TonDepositWallet), tx.Hash, "transaction without in message")
-			return Events{}, fmt.Errorf("anomalous behavior of the deposit TON wallet")
+			audit.LogTX(audit.Error, string(models.TonDepositWallet), tx.Hash, "transaction without in message")
+			return models.Events{}, fmt.Errorf("anomalous behavior of the deposit TON wallet")
 		}
 
-		success, err := checkTxForSuccess(tx)
-		if err != nil {
-			return Events{}, err
-		}
-		if !success {
-			audit.LogTX(audit.Info, string(TonDepositWallet), tx.Hash, "failed transaction")
+		if !isTxSuccessful(tx) {
+			audit.LogTX(audit.Info, string(models.TonDepositWallet), tx.Hash, "failed transaction")
 			continue
 		}
 
@@ -317,26 +332,26 @@ func (s *BlockScanner) processTonDepositWalletTXs(txs transactions) (Events, err
 			// it is not critical for internal transfers (double spending not dangerous).
 			e, err := s.processTonDepositWalletExternalInMsg(tx)
 			if err != nil {
-				return Events{}, err
+				return models.Events{}, err
 			}
 			events.Append(e)
 		case tlb.MsgTypeInternal:
 			// success external income (without bounce)
 			// internal message can not invoke out message for TON wallet V3 except of bounce
 			// bounced filtered at !success step
-			if len(tx.IO.Out) != 0 {
-				audit.LogTX(audit.Error, string(TonDepositWallet), tx.Hash, "outgoing message from internal incoming")
-				return Events{}, fmt.Errorf("anomalous behavior of the deposit TON wallet")
+			if len(tx.IO.Out.List.All()) != 0 {
+				audit.LogTX(audit.Error, string(models.TonDepositWallet), tx.Hash, "outgoing message from internal incoming")
+				return models.Events{}, fmt.Errorf("anomalous behavior of the deposit TON wallet")
 			}
 			e, err := s.processTonDepositWalletInternalInMsg(tx)
 			if err != nil {
-				return Events{}, err
+				return models.Events{}, err
 			}
 			events.Append(e)
 		default:
-			audit.LogTX(audit.Error, string(TonDepositWallet), tx.Hash,
+			audit.LogTX(audit.Error, string(models.TonDepositWallet), tx.Hash,
 				"transaction in message must be internal or external in")
-			return Events{}, fmt.Errorf("anomalous behavior of the deposit TON wallet")
+			return models.Events{}, fmt.Errorf("anomalous behavior of the deposit TON wallet")
 		}
 	}
 	return events, nil
@@ -346,10 +361,10 @@ func (s *BlockScanner) processJettonDepositWalletTXs(
 	ctx context.Context,
 	txs transactions,
 	blockID, prevBlockID *ton.BlockIDExt,
-) (Events, error) {
+) (models.Events, error) {
 	var (
 		unknownTransactions []*tlb.Transaction
-		events              Events
+		events              models.Events
 	)
 
 	knownIncomeAmount := big.NewInt(0)
@@ -358,14 +373,14 @@ func (s *BlockScanner) processJettonDepositWalletTXs(
 	for _, tx := range txs.Transactions {
 		e, knownAmount, outUnknownFound, err := s.processJettonDepositOutMsgs(tx)
 		if err != nil {
-			return Events{}, err
+			return models.Events{}, err
 		}
 		knownIncomeAmount.Add(knownIncomeAmount, knownAmount)
 		events.Append(e)
 
 		e, totalAmount, inUnknownFound, err := s.processJettonDepositInMsg(tx)
 		if err != nil {
-			return Events{}, err
+			return models.Events{}, err
 		}
 		totalWithdrawalsAmount.Add(totalWithdrawalsAmount, totalAmount)
 		events.Append(e)
@@ -377,13 +392,13 @@ func (s *BlockScanner) processJettonDepositWalletTXs(
 
 	unknownIncomeAmount, err := s.calculateJettonAmounts(ctx, txs.Address, prevBlockID, blockID, knownIncomeAmount, totalWithdrawalsAmount)
 	if err != nil {
-		return Events{}, err
+		return models.Events{}, err
 	}
 
 	if unknownIncomeAmount.Cmp(big.NewInt(0)) == 1 { // unknownIncomeAmount > 0
 		unknownIncomes, err := convertUnknownJettonTxs(unknownTransactions, txs.Address, unknownIncomeAmount)
 		if err != nil {
-			return Events{}, err
+			return models.Events{}, err
 		}
 		events.ExternalIncomes = append(events.ExternalIncomes, unknownIncomes...)
 	}
@@ -393,7 +408,7 @@ func (s *BlockScanner) processJettonDepositWalletTXs(
 
 func (s *BlockScanner) calculateJettonAmounts(
 	ctx context.Context,
-	address Address,
+	address models.Address,
 	prevBlockID, blockID *ton.BlockIDExt,
 	knownIncomeAmount, totalWithdrawalsAmount *big.Int,
 ) (
@@ -420,23 +435,23 @@ func (s *BlockScanner) calculateJettonAmounts(
 	return unknownIncomeAmount, nil
 }
 
-func convertUnknownJettonTxs(txs []*tlb.Transaction, addr Address, amount *big.Int) ([]ExternalIncome, error) {
-	var incomes []ExternalIncome
+func convertUnknownJettonTxs(txs []*tlb.Transaction, addr models.Address, amount *big.Int) ([]models.ExternalIncome, error) {
+	var incomes []models.ExternalIncome
 	for _, tx := range txs { // unknown sender (jetton wallet owner). do not save message sender as from.
-		incomes = append(incomes, ExternalIncome{
+		incomes = append(incomes, models.ExternalIncome{
 			Utime:  tx.Now,
 			Lt:     tx.LT,
 			To:     addr,
-			Amount: ZeroCoins(),
+			Amount: models.ZeroCoins(),
 		})
 
 	}
 	if len(txs) > 0 {
-		incomes = append(incomes, ExternalIncome{
+		incomes = append(incomes, models.ExternalIncome{
 			Utime:  txs[0].Now, // mark unknown tx with first tx time
 			Lt:     txs[0].LT,
 			To:     addr,
-			Amount: NewCoins(amount),
+			Amount: models.NewCoins(amount),
 		})
 	}
 	return incomes, nil
@@ -463,7 +478,7 @@ func decodeJettonTransferNotification(msg *tlb.InternalMessage) (jettonTransferN
 	}
 	return jettonTransferNotificationMsg{
 		Sender:  notification.Sender,
-		Amount:  NewCoins(notification.Amount.NanoTON()),
+		Amount:  models.NewCoins(notification.Amount.NanoTON()),
 		Comment: LoadComment(notification.ForwardPayload),
 	}, nil
 }
@@ -491,7 +506,7 @@ func DecodeJettonTransfer(msg *tlb.InternalMessage) (JettonTransferMsg, error) {
 		return JettonTransferMsg{}, err
 	}
 	return JettonTransferMsg{
-		NewCoins(transfer.Amount.NanoTON()),
+		models.NewCoins(transfer.Amount.NanoTON()),
 		transfer.Destination,
 		LoadComment(transfer.ForwardPayload),
 	}, nil
@@ -518,14 +533,14 @@ func decodeJettonExcesses(msg *tlb.InternalMessage) (uint64, error) {
 
 func parseExternalMessage(msg *tlb.ExternalMessage) (
 	u uuid.UUID,
-	addrMap map[Address]struct{},
+	addrMap map[models.Address]struct{},
 	isValidWithdrawal bool,
 	err error,
 ) {
 	if msg == nil {
 		return uuid.UUID{}, nil, false, fmt.Errorf("nil msg")
 	}
-	addrMap = make(map[Address]struct{})
+	addrMap = make(map[models.Address]struct{})
 
 	info, err := getHighLoadWalletExtMsgInfo(msg)
 	if err != nil {
@@ -535,7 +550,7 @@ func parseExternalMessage(msg *tlb.ExternalMessage) (
 	for _, m := range info.Messages.All() {
 		var (
 			intMsg tlb.InternalMessage
-			addr   Address
+			addr   models.Address
 		)
 		msgCell, err := m.Value.BeginParse().LoadRef()
 		if err != nil {
@@ -547,12 +562,12 @@ func parseExternalMessage(msg *tlb.ExternalMessage) (
 		}
 		jettonTransfer, err := DecodeJettonTransfer(&intMsg)
 		if err == nil {
-			addr, err = AddressFromTonutilsAddress(jettonTransfer.Destination)
+			addr, err = models.AddressFromTonutilsAddress(jettonTransfer.Destination)
 			if err != nil {
 				return uuid.UUID{}, nil, false, nil
 			}
 		} else {
-			addr, err = AddressFromTonutilsAddress(intMsg.DstAddr)
+			addr, err = models.AddressFromTonutilsAddress(intMsg.DstAddr)
 			if err != nil {
 				return uuid.UUID{}, nil, false, nil
 			}
@@ -566,12 +581,12 @@ func parseExternalMessage(msg *tlb.ExternalMessage) (
 	return info.UUID, addrMap, true, nil
 }
 
-func (s *BlockScanner) failedWithdrawals(inMap map[Address]struct{}, outMap map[Address]struct{}, u uuid.UUID) []ExternalWithdrawal {
-	var w []ExternalWithdrawal
+func (s *BlockScanner) failedWithdrawals(inMap map[models.Address]struct{}, outMap map[models.Address]struct{}, u uuid.UUID) []models.ExternalWithdrawal {
+	var w []models.ExternalWithdrawal
 	for i := range inMap {
-		_, dstOk := s.db.GetWalletType(i)
+		_, dstOk := s.repo.GetWalletType(i)
 		if _, ok := outMap[i]; !ok && !dstOk { // !dstOk - not failed internal fee payments
-			w = append(w, ExternalWithdrawal{ExtMsgUuid: u, To: i, IsFailed: true})
+			w = append(w, models.ExternalWithdrawal{ExtMsgUuid: u, To: i, IsFailed: true})
 		}
 	}
 	return w
@@ -602,44 +617,48 @@ func getHighLoadWalletExtMsgInfo(extMsg *tlb.ExternalMessage) (HighLoadWalletExt
 	return HighLoadWalletExtMsgInfo{UUID: u, TTL: ttl, Messages: data.Messages}, nil
 }
 
-func (s *BlockScanner) processTonHotWalletExternalInMsg(tx *tlb.Transaction) (Events, error) {
-	var events Events
+func (s *BlockScanner) processTonHotWalletExternalInMsg(tx *tlb.Transaction) (models.Events, error) {
+	var events models.Events
 	inMsg := tx.IO.In.AsExternalIn()
 	// withdrawal messages must be only with different recipients for identification
 	u, addrMapIn, isValid, err := parseExternalMessage(inMsg)
 	if err != nil {
-		return Events{}, err
+		return models.Events{}, err
 	}
 	if !isValid {
-		audit.LogTX(audit.Error, string(TonHotWallet), tx.Hash, "not valid external message")
-		return Events{}, fmt.Errorf("not valid message")
+		audit.LogTX(audit.Error, string(models.TonHotWallet), tx.Hash, "not valid external message")
+		return models.Events{}, fmt.Errorf("not valid message")
 	}
 
-	addrMapOut := make(map[Address]struct{})
-	for _, m := range tx.IO.Out {
+	addrMapOut := make(map[models.Address]struct{})
+	messages, err := tx.IO.Out.ToSlice()
+	if err != nil {
+		return models.Events{}, err
+	}
+	for _, m := range messages {
 		if m.MsgType != tlb.MsgTypeInternal {
-			audit.LogTX(audit.Error, string(TonHotWallet), tx.Hash, "not internal out message for transaction")
-			return Events{}, fmt.Errorf("anomalous behavior of the TON hot wallet")
+			audit.LogTX(audit.Error, string(models.TonHotWallet), tx.Hash, "not internal out message for transaction")
+			return models.Events{}, fmt.Errorf("anomalous behavior of the TON hot wallet")
 		}
 		msg := m.AsInternal()
 
-		addr, err := AddressFromTonutilsAddress(msg.DstAddr)
+		addr, err := models.AddressFromTonutilsAddress(msg.DstAddr)
 		if err != nil {
-			return Events{}, fmt.Errorf("invalid address in withdrawal message")
+			return models.Events{}, fmt.Errorf("invalid address in withdrawal message")
 		}
-		dstType, dstOk := s.db.GetWalletTypeByTonutilsAddress(msg.DstAddr)
+		dstType, dstOk := s.repo.GetWalletTypeByTonutilsAddress(msg.DstAddr)
 
-		if dstOk && dstType == JettonHotWallet { // Jetton external withdrawal
+		if dstOk && dstType == models.JettonHotWallet { // Jetton external withdrawal
 			jettonTransfer, err := DecodeJettonTransfer(msg)
 			if err != nil {
-				audit.LogTX(audit.Error, string(TonHotWallet), tx.Hash, "invalid jetton transfer message to hot jetton wallet")
-				return Events{}, fmt.Errorf("invalid jetton transfer message to hot jetton wallet")
+				audit.LogTX(audit.Error, string(models.TonHotWallet), tx.Hash, "invalid jetton transfer message to hot jetton wallet")
+				return models.Events{}, fmt.Errorf("invalid jetton transfer message to hot jetton wallet")
 			}
-			a, err := AddressFromTonutilsAddress(jettonTransfer.Destination)
+			a, err := models.AddressFromTonutilsAddress(jettonTransfer.Destination)
 			if err != nil {
-				return Events{}, fmt.Errorf("invalid address in withdrawal message")
+				return models.Events{}, fmt.Errorf("invalid address in withdrawal message")
 			}
-			events.ExternalWithdrawals = append(events.ExternalWithdrawals, ExternalWithdrawal{
+			events.ExternalWithdrawals = append(events.ExternalWithdrawals, models.ExternalWithdrawal{
 				ExtMsgUuid: u,
 				Utime:      msg.CreatedAt,
 				Lt:         msg.CreatedLT,
@@ -652,10 +671,10 @@ func (s *BlockScanner) processTonHotWalletExternalInMsg(tx *tlb.Transaction) (Ev
 			continue
 		}
 
-		if dstOk && dstType == JettonOwner { // Jetton internal withdrawal or service withdrawal
+		if dstOk && dstType == models.JettonOwner { // Jetton internal withdrawal or service withdrawal
 			e, err := s.processTonHotWalletProxyMsg(msg)
 			if err != nil {
-				return Events{}, fmt.Errorf("jetton withdrawal error: %v", err)
+				return models.Events{}, fmt.Errorf("jetton withdrawal error: %v", err)
 			}
 			events.Append(e)
 			addrMapOut[addr] = struct{}{}
@@ -663,12 +682,12 @@ func (s *BlockScanner) processTonHotWalletExternalInMsg(tx *tlb.Transaction) (Ev
 		}
 
 		if !dstOk { // hot_wallet -> unknown_address. to filter internal fee payments
-			events.ExternalWithdrawals = append(events.ExternalWithdrawals, ExternalWithdrawal{
+			events.ExternalWithdrawals = append(events.ExternalWithdrawals, models.ExternalWithdrawal{
 				ExtMsgUuid: u,
 				Utime:      msg.CreatedAt,
 				Lt:         msg.CreatedLT,
 				To:         addr,
-				Amount:     NewCoins(msg.Amount.NanoTON()),
+				Amount:     models.NewCoins(msg.Amount.NanoTON()),
 				Comment:    msg.Comment(),
 				IsFailed:   false,
 			})
@@ -679,32 +698,32 @@ func (s *BlockScanner) processTonHotWalletExternalInMsg(tx *tlb.Transaction) (Ev
 	return events, nil
 }
 
-func (s *BlockScanner) processTonHotWalletProxyMsg(msg *tlb.InternalMessage) (Events, error) {
-	var events Events
+func (s *BlockScanner) processTonHotWalletProxyMsg(msg *tlb.InternalMessage) (models.Events, error) {
+	var events models.Events
 	body := msg.Payload()
 	internalPayload, err := body.BeginParse().LoadRef()
 	if err != nil {
-		return Events{}, fmt.Errorf("no internal payload to proxy contract: %v", err)
+		return models.Events{}, fmt.Errorf("no internal payload to proxy contract: %v", err)
 	}
 	var intMsg tlb.InternalMessage
 	err = tlb.LoadFromCell(&intMsg, internalPayload)
 	if err != nil {
-		return Events{}, fmt.Errorf("can not decode payload message for proxy contract: %v", err)
+		return models.Events{}, fmt.Errorf("can not decode payload message for proxy contract: %v", err)
 	}
 
-	destType, ok := s.db.GetWalletTypeByTonutilsAddress(intMsg.DstAddr)
-	// ok && destType == TonHotWallet - service TON withdrawal
+	destType, ok := s.repo.GetWalletTypeByTonutilsAddress(intMsg.DstAddr)
+	// ok && destType == models.TonHotWallet - service TON withdrawal
 	// !ok - service Jetton withdrawal
-	if ok && destType == JettonDepositWallet { // Jetton internal withdrawal
+	if ok && destType == models.JettonDepositWallet { // Jetton internal withdrawal
 		jettonTransfer, err := DecodeJettonTransfer(&intMsg)
 		if err != nil {
-			return Events{}, fmt.Errorf("invalid jetton transfer message to deposit jetton wallet: %v", err)
+			return models.Events{}, fmt.Errorf("invalid jetton transfer message to deposit jetton wallet: %v", err)
 		}
-		a, err := AddressFromTonutilsAddress(jettonTransfer.Destination)
+		a, err := models.AddressFromTonutilsAddress(jettonTransfer.Destination)
 		if err != nil {
-			return Events{}, fmt.Errorf("invalid address in withdrawal message")
+			return models.Events{}, fmt.Errorf("invalid address in withdrawal message")
 		}
-		events.SendingConfirmations = append(events.SendingConfirmations, SendingConfirmation{
+		events.SendingConfirmations = append(events.SendingConfirmations, models.SendingConfirmation{
 			Lt:   msg.CreatedLT,
 			From: a,
 			Memo: jettonTransfer.Comment,
@@ -713,58 +732,54 @@ func (s *BlockScanner) processTonHotWalletProxyMsg(msg *tlb.InternalMessage) (Ev
 	return events, nil
 }
 
-func (s *BlockScanner) processTonHotWalletInternalInMsg(tx *tlb.Transaction) (Events, error) {
-	var events Events
+func (s *BlockScanner) processTonHotWalletInternalInMsg(tx *tlb.Transaction) (models.Events, error) {
+	var events models.Events
 	inMsg := tx.IO.In.AsInternal()
-	srcAddr, err := AddressFromTonutilsAddress(inMsg.SrcAddr)
+	srcAddr, err := models.AddressFromTonutilsAddress(inMsg.SrcAddr)
 	if err != nil {
-		return Events{}, err
+		return models.Events{}, err
 	}
-	dstAddr, err := AddressFromTonutilsAddress(inMsg.DstAddr)
+	dstAddr, err := models.AddressFromTonutilsAddress(inMsg.DstAddr)
 	if err != nil {
-		return Events{}, err
+		return models.Events{}, err
 	}
 
-	srcType, srcOk := s.db.GetWalletType(srcAddr)
+	srcType, srcOk := s.repo.GetWalletType(srcAddr)
 	if !srcOk { // unknown_address -> hot_wallet. to check for external jetton transfer confirmation via excess message
 		queryID, err := decodeJettonExcesses(inMsg)
 		if err == nil {
 			events.WithdrawalConfirmations = append(events.WithdrawalConfirmations,
-				JettonWithdrawalConfirmation{queryID})
+				models.JettonWithdrawalConfirmation{queryID})
 		}
-	} else if srcOk && srcType == TonDepositWallet { // income TONs from deposit
-		income := InternalIncome{
+	} else if srcOk && srcType == models.TonDepositWallet { // income TONs from deposit
+		income := models.InternalIncome{
 			Lt:       inMsg.CreatedLT,
 			Utime:    inMsg.CreatedAt,
 			From:     srcAddr,
 			To:       dstAddr,
-			Amount:   NewCoins(inMsg.Amount.NanoTON()),
+			Amount:   models.NewCoins(inMsg.Amount.NanoTON()),
 			Memo:     inMsg.Comment(),
 			IsFailed: false,
 		}
-		success, err := checkTxForSuccess(tx)
-		if err != nil {
-			return Events{}, err
-		}
 		// TODO: check for partially failed message
-		if success {
+		if isTxSuccessful(tx) {
 			events.InternalIncomes = append(events.InternalIncomes, income)
 		} else {
 			income.IsFailed = true
 			events.InternalIncomes = append(events.InternalIncomes, income)
 		}
-	} else if srcOk && srcType == JettonHotWallet { // income Jettons notification from Jetton hot wallet
+	} else if srcOk && srcType == models.JettonHotWallet { // income Jettons notification from Jetton hot wallet
 		income, err := decodeJettonTransferNotification(inMsg)
 		if err == nil {
-			sender, err := AddressFromTonutilsAddress(income.Sender)
+			sender, err := models.AddressFromTonutilsAddress(income.Sender)
 			if err != nil {
-				return Events{}, err
+				return models.Events{}, err
 			}
-			fromType, fromOk := s.db.GetWalletType(sender)
-			if !fromOk || fromType != JettonOwner { // skip transfers not from deposit wallets
+			fromType, fromOk := s.repo.GetWalletType(sender)
+			if !fromOk || fromType != models.JettonOwner { // skip transfers not from deposit wallets
 				return events, nil
 			}
-			events.InternalIncomes = append(events.InternalIncomes, InternalIncome{
+			events.InternalIncomes = append(events.InternalIncomes, models.InternalIncome{
 				Lt:       inMsg.CreatedLT,
 				Utime:    inMsg.CreatedAt,
 				From:     sender, // sender == owner of jetton deposit wallet
@@ -778,36 +793,41 @@ func (s *BlockScanner) processTonHotWalletInternalInMsg(tx *tlb.Transaction) (Ev
 	return events, nil
 }
 
-func (s *BlockScanner) processTonDepositWalletExternalInMsg(tx *tlb.Transaction) (Events, error) {
-	var events Events
+func (s *BlockScanner) processTonDepositWalletExternalInMsg(tx *tlb.Transaction) (models.Events, error) {
+	var events models.Events
 
-	dstAddr, err := AddressFromTonutilsAddress(tx.IO.In.AsExternalIn().DstAddr)
+	dstAddr, err := models.AddressFromTonutilsAddress(tx.IO.In.AsExternalIn().DstAddr)
 	if err != nil {
-		return Events{}, err
+		return models.Events{}, err
 	}
 
-	for _, o := range tx.IO.Out {
+	messages, err := tx.IO.Out.ToSlice()
+	if err != nil {
+		return models.Events{}, err
+	}
+
+	for _, o := range messages {
 		if o.MsgType != tlb.MsgTypeInternal {
-			audit.LogTX(audit.Error, string(TonDepositWallet), tx.Hash, "not internal out message for transaction")
-			return Events{}, fmt.Errorf("anomalous behavior of the deposit TON wallet")
+			audit.LogTX(audit.Error, string(models.TonDepositWallet), tx.Hash, "not internal out message for transaction")
+			return models.Events{}, fmt.Errorf("anomalous behavior of the deposit TON wallet")
 		}
 		msg := o.AsInternal()
-		t, srcOk := s.db.GetWalletTypeByTonutilsAddress(msg.DstAddr)
-		if !srcOk || t != TonHotWallet {
-			audit.LogTX(audit.Warning, string(TonDepositWallet), tx.Hash, fmt.Sprintf("TONs withdrawal from %v to %v (not to hot wallet)",
+		t, srcOk := s.repo.GetWalletTypeByTonutilsAddress(msg.DstAddr)
+		if !srcOk || t != models.TonHotWallet {
+			audit.LogTX(audit.Warning, string(models.TonDepositWallet), tx.Hash, fmt.Sprintf("TONs withdrawal from %v to %v (not to hot wallet)",
 				msg.SrcAddr.String(), msg.DstAddr.String()))
 			continue
 		}
-		events.SendingConfirmations = append(events.SendingConfirmations, SendingConfirmation{
+		events.SendingConfirmations = append(events.SendingConfirmations, models.SendingConfirmation{
 			Lt:   msg.CreatedLT,
 			From: dstAddr,
 			Memo: msg.Comment(),
 		})
-		events.InternalWithdrawals = append(events.InternalWithdrawals, InternalWithdrawal{
+		events.InternalWithdrawals = append(events.InternalWithdrawals, models.InternalWithdrawal{
 			Utime:    msg.CreatedAt,
 			Lt:       msg.CreatedLT,
 			From:     dstAddr,
-			Amount:   NewCoins(msg.Amount.NanoTON()),
+			Amount:   models.NewCoins(msg.Amount.NanoTON()),
 			Memo:     msg.Comment(),
 			IsFailed: false,
 		})
@@ -815,62 +835,67 @@ func (s *BlockScanner) processTonDepositWalletExternalInMsg(tx *tlb.Transaction)
 	return events, nil
 }
 
-func (s *BlockScanner) processTonDepositWalletInternalInMsg(tx *tlb.Transaction) (Events, error) {
+func (s *BlockScanner) processTonDepositWalletInternalInMsg(tx *tlb.Transaction) (models.Events, error) {
 	var (
-		events        Events
-		from          Address
+		events        models.Events
+		from          models.Address
 		err           error
 		fromWorkchain *int32
 	)
 
 	inMsg := tx.IO.In.AsInternal()
-	dstAddr, err := AddressFromTonutilsAddress(inMsg.DstAddr)
+	dstAddr, err := models.AddressFromTonutilsAddress(inMsg.DstAddr)
 	if err != nil {
-		return Events{}, err
+		return models.Events{}, err
 	}
 
 	isKnownSender := false
 	// support only std address
 	if inMsg.SrcAddr.Type() == address.StdAddress {
-		from, err = AddressFromTonutilsAddress(inMsg.SrcAddr)
+		from, err = models.AddressFromTonutilsAddress(inMsg.SrcAddr)
 		if err != nil {
-			return Events{}, err
+			return models.Events{}, err
 		}
-		_, isKnownSender = s.db.GetWalletType(from)
+		_, isKnownSender = s.repo.GetWalletType(from)
 		wc := inMsg.SrcAddr.Workchain()
 		fromWorkchain = &wc
 	}
 	if !isKnownSender { // income TONs from payer. exclude internal (hot->deposit, deposit->deposit) transfers.
-		events.ExternalIncomes = append(events.ExternalIncomes, ExternalIncome{
+		events.ExternalIncomes = append(events.ExternalIncomes, models.ExternalIncome{
 			Lt:            inMsg.CreatedLT,
 			Utime:         inMsg.CreatedAt,
 			From:          from.ToBytes(),
 			FromWorkchain: fromWorkchain,
 			To:            dstAddr,
-			Amount:        NewCoins(inMsg.Amount.NanoTON()),
+			Amount:        models.NewCoins(inMsg.Amount.NanoTON()),
 			Comment:       inMsg.Comment(),
 		})
 	}
 	return events, nil
 }
 
-func (s *BlockScanner) processJettonDepositOutMsgs(tx *tlb.Transaction) (Events, *big.Int, bool, error) {
-	var events Events
+func (s *BlockScanner) processJettonDepositOutMsgs(tx *tlb.Transaction) (models.Events, *big.Int, bool, error) {
+	var events models.Events
 	knownIncomeAmount := big.NewInt(0)
 	unknownMsgFound := false
 
-	for _, m := range tx.IO.Out { // checks for JettonTransferNotification
+	messages, err := tx.IO.Out.ToSlice()
+	if err != nil {
+		return models.Events{}, nil, false, err
+	}
+
+	for _, m := range messages { // checks for JettonTransferNotification
 
 		if m.MsgType != tlb.MsgTypeInternal {
-			audit.LogTX(audit.Info, string(JettonDepositWallet), tx.Hash, "sends external out message")
+			audit.LogTX(audit.Info, string(models.JettonDepositWallet), tx.Hash, "sends external out message")
 			unknownMsgFound = true
 			continue
 		} // skip external_out msg
 
 		outMsg := m.AsInternal()
-		srcAddr, err := AddressFromTonutilsAddress(outMsg.SrcAddr)
+		srcAddr, err := models.AddressFromTonutilsAddress(outMsg.SrcAddr)
 		if err != nil {
-			return Events{}, nil, false, err
+			return models.Events{}, nil, false, err
 		}
 
 		notify, err := decodeJettonTransferNotification(outMsg)
@@ -880,24 +905,24 @@ func (s *BlockScanner) processJettonDepositOutMsgs(tx *tlb.Transaction) (Events,
 		}
 
 		// need not check success. impossible for failed txs.
-		_, senderOk := s.db.GetWalletTypeByTonutilsAddress(notify.Sender)
+		_, senderOk := s.repo.GetWalletTypeByTonutilsAddress(notify.Sender)
 		if senderOk {
 			// TODO: check balance calculation for unknown transactions for service transfers
-			audit.LogTX(audit.Info, string(JettonDepositWallet), tx.Hash, "service Jetton transfer")
+			audit.LogTX(audit.Info, string(models.JettonDepositWallet), tx.Hash, "service Jetton transfer")
 			// not set unknownMsgFound = true to prevent service transfers interpretation as unknown
 			continue
 		} // some kind of internal transfer
 
-		dstAddr, err := AddressFromTonutilsAddress(outMsg.DstAddr)
+		dstAddr, err := models.AddressFromTonutilsAddress(outMsg.DstAddr)
 		if err != nil {
-			return Events{}, nil, false, err
+			return models.Events{}, nil, false, err
 		}
-		owner := s.db.GetOwner(srcAddr)
+		owner := s.repo.GetOwner(srcAddr)
 		if owner == nil {
-			return Events{}, nil, false, fmt.Errorf("no owner for Jetton deposit in addressbook")
+			return models.Events{}, nil, false, fmt.Errorf("no owner for Jetton deposit in addressbook")
 		}
 		if dstAddr != *owner {
-			audit.LogTX(audit.Info, string(JettonDepositWallet), tx.Hash,
+			audit.LogTX(audit.Info, string(models.JettonDepositWallet), tx.Hash,
 				"sends transfer notification message not to owner")
 			// interpret it as an unknown message
 			unknownMsgFound = true
@@ -914,7 +939,7 @@ func (s *BlockScanner) processJettonDepositOutMsgs(tx *tlb.Transaction) (Events,
 			wc := notify.Sender.Workchain()
 			fromWorkchain = &wc
 		}
-		events.ExternalIncomes = append(events.ExternalIncomes, ExternalIncome{
+		events.ExternalIncomes = append(events.ExternalIncomes, models.ExternalIncome{
 			Utime:         outMsg.CreatedAt,
 			Lt:            outMsg.CreatedLT,
 			From:          from,
@@ -928,32 +953,27 @@ func (s *BlockScanner) processJettonDepositOutMsgs(tx *tlb.Transaction) (Events,
 	return events, knownIncomeAmount, unknownMsgFound, nil
 }
 
-func (s *BlockScanner) processJettonDepositInMsg(tx *tlb.Transaction) (Events, *big.Int, bool, error) {
-	var events Events
+func (s *BlockScanner) processJettonDepositInMsg(tx *tlb.Transaction) (models.Events, *big.Int, bool, error) {
+	var events models.Events
 	unknownMsgFound := false
 	totalWithdrawalsAmount := big.NewInt(0)
 
 	if tx.IO.In == nil { // skip not decodable in_msg
-		audit.LogTX(audit.Info, string(JettonDepositWallet), tx.Hash, "transaction without in message")
+		audit.LogTX(audit.Info, string(models.JettonDepositWallet), tx.Hash, "transaction without in message")
 		// interpret it as an unknown message
 		return events, totalWithdrawalsAmount, true, nil
 	}
 
 	if tx.IO.In.MsgType != tlb.MsgTypeInternal { // skip not decodable in_msg
-		audit.LogTX(audit.Info, string(JettonDepositWallet), tx.Hash, "not internal in message")
+		audit.LogTX(audit.Info, string(models.JettonDepositWallet), tx.Hash, "not internal in message")
 		// interpret it as an unknown message
 		return events, totalWithdrawalsAmount, true, nil
 	}
 
-	success, err := checkTxForSuccess(tx)
-	if err != nil {
-		return Events{}, nil, false, err
-	}
-
 	inMsg := tx.IO.In.AsInternal()
-	dstAddr, err := AddressFromTonutilsAddress(inMsg.DstAddr)
+	dstAddr, err := models.AddressFromTonutilsAddress(inMsg.DstAddr)
 	if err != nil {
-		return Events{}, nil, false, err
+		return models.Events{}, nil, false, err
 	}
 
 	transfer, err := DecodeJettonTransfer(inMsg)
@@ -962,8 +982,8 @@ func (s *BlockScanner) processJettonDepositInMsg(tx *tlb.Transaction) (Events, *
 		return events, totalWithdrawalsAmount, unknownMsgFound, nil
 	}
 
-	if !success { // failed withdrawal from deposit jetton wallet
-		events.InternalWithdrawals = append(events.InternalWithdrawals, InternalWithdrawal{
+	if !isTxSuccessful(tx) { // failed withdrawal from deposit jetton wallet
+		events.InternalWithdrawals = append(events.InternalWithdrawals, models.InternalWithdrawal{
 			Utime:    inMsg.CreatedAt,
 			Lt:       inMsg.CreatedLT,
 			From:     dstAddr,
@@ -975,21 +995,21 @@ func (s *BlockScanner) processJettonDepositInMsg(tx *tlb.Transaction) (Events, *
 	}
 
 	// success withdrawal from deposit jetton wallet
-	if len(tx.IO.Out) < 1 {
-		audit.LogTX(audit.Error, string(JettonDepositWallet), tx.Hash, "success Jettons transfer TX without out message")
-		return Events{}, nil, true, fmt.Errorf("anomalous behavior of the deposit Jetton wallet")
+	if len(tx.IO.Out.List.All()) < 1 {
+		audit.LogTX(audit.Error, string(models.JettonDepositWallet), tx.Hash, "success Jettons transfer TX without out message")
+		return models.Events{}, nil, true, fmt.Errorf("anomalous behavior of the deposit Jetton wallet")
 	}
 	totalWithdrawalsAmount.Add(totalWithdrawalsAmount, transfer.Amount.BigInt())
-	destType, destOk := s.db.GetWalletTypeByTonutilsAddress(transfer.Destination)
-	if !destOk || destType != TonHotWallet {
-		audit.LogTX(audit.Warning, string(JettonDepositWallet), tx.Hash,
+	destType, destOk := s.repo.GetWalletTypeByTonutilsAddress(transfer.Destination)
+	if !destOk || destType != models.TonHotWallet {
+		audit.LogTX(audit.Warning, string(models.JettonDepositWallet), tx.Hash,
 			fmt.Sprintf("Jettons withdrawal from %v to %v (not to hot wallet)",
 				inMsg.DstAddr.String(), transfer.Destination.String()))
 		// TODO: check balance calculation for unknown transactions for service transfers
 		// not set unknownMsgFound = true to prevent service transfers interpretation as unknown
-		return Events{}, totalWithdrawalsAmount, false, nil
+		return models.Events{}, totalWithdrawalsAmount, false, nil
 	}
-	events.InternalWithdrawals = append(events.InternalWithdrawals, InternalWithdrawal{
+	events.InternalWithdrawals = append(events.InternalWithdrawals, models.InternalWithdrawal{
 		Utime:    inMsg.CreatedAt,
 		Lt:       inMsg.CreatedLT,
 		From:     dstAddr,

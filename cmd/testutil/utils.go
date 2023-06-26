@@ -4,21 +4,23 @@ import (
 	"bytes"
 	"context"
 	"fmt"
-	"github.com/gobicycle/bicycle/blockchain"
+	"math"
+	"sync"
+	"time"
+
 	"github.com/gobicycle/bicycle/config"
 	"github.com/gobicycle/bicycle/core"
+	"github.com/gobicycle/bicycle/models"
 	"github.com/gofrs/uuid"
 	log "github.com/sirupsen/logrus"
 	"github.com/xssnick/tonutils-go/address"
 	"github.com/xssnick/tonutils-go/tlb"
-	"math"
-	"sync"
-	"time"
+	"github.com/xssnick/tonutils-go/ton"
 )
 
 type PayerProcessor struct {
 	client                   *Client
-	bcClient                 *blockchain.Connection
+	bcClient                 core.Blockchain
 	depositsA                []Deposit
 	depositsB                []Deposit
 	hotWalletsAddrA          map[string]*address.Address
@@ -104,7 +106,7 @@ func (h *hotBalances) WriteBalance(walletSide PaymentSide, currency string, bala
 func NewPayerProcessor(
 	ctx context.Context,
 	client *Client,
-	bcClient *blockchain.Connection,
+	bcClient core.Blockchain,
 	depositsA map[string][]string,
 	depositsB map[string][]string,
 	hotA, hotB *address.Address,
@@ -112,8 +114,8 @@ func NewPayerProcessor(
 	// hot jetton wallets
 	addrA := make(map[string]*address.Address)
 	addrB := make(map[string]*address.Address)
-	addrA[core.TonSymbol] = hotA
-	addrB[core.TonSymbol] = hotB
+	addrA[models.TonSymbol] = hotA
+	addrB[models.TonSymbol] = hotB
 
 	lastTxIDA, err := getLastTxID(ctx, bcClient, hotA)
 	if err != nil {
@@ -137,7 +139,7 @@ func NewPayerProcessor(
 		addrB[cur] = jwB
 		totalProcessedAmount.WithLabelValues(cur).Set(0)
 	}
-	totalProcessedAmount.WithLabelValues(core.TonSymbol).Set(0)
+	totalProcessedAmount.WithLabelValues(models.TonSymbol).Set(0)
 	p := &PayerProcessor{
 		client:          client,
 		bcClient:        bcClient,
@@ -154,10 +156,10 @@ func NewPayerProcessor(
 	return p
 }
 
-func convertDeposits(bcClient *blockchain.Connection, deposits map[string][]string) []Deposit {
+func convertDeposits(bcClient core.Blockchain, deposits map[string][]string) []Deposit {
 	var dep []Deposit
 	for cur, addresses := range deposits {
-		if cur != core.TonSymbol {
+		if cur != models.TonSymbol {
 			jetton := config.Config.Jettons[cur]
 			for _, a := range addresses {
 				addr, _ := address.ParseAddr(a)
@@ -238,20 +240,20 @@ func (p *PayerProcessor) balanceMonitor() {
 func (p *PayerProcessor) updateHotWalletBalances(ctx context.Context) (map[string]int64, error) {
 	totBalance := make(map[string]int64)
 
-	bA, _, err := p.bcClient.GetAccountCurrentState(ctx, p.hotWalletsAddrA[core.TonSymbol])
+	bA, _, err := p.bcClient.GetAccountCurrentState(ctx, p.hotWalletsAddrA[models.TonSymbol])
 	if err != nil {
 		return nil, err
 	}
-	bB, _, err := p.bcClient.GetAccountCurrentState(ctx, p.hotWalletsAddrB[core.TonSymbol])
+	bB, _, err := p.bcClient.GetAccountCurrentState(ctx, p.hotWalletsAddrB[models.TonSymbol])
 	if err != nil {
 		return nil, err
 	}
 
-	hotWalletABalance.WithLabelValues(core.TonSymbol).Set(float64(bA.Int64()))
-	hotWalletBBalance.WithLabelValues(core.TonSymbol).Set(float64(bB.Int64()))
-	totBalance[core.TonSymbol] = bA.Int64() + bB.Int64()
-	p.balances.WriteBalance(SideA, core.TonSymbol, bA.Int64())
-	p.balances.WriteBalance(SideB, core.TonSymbol, bB.Int64())
+	hotWalletABalance.WithLabelValues(models.TonSymbol).Set(float64(bA.Int64()))
+	hotWalletBBalance.WithLabelValues(models.TonSymbol).Set(float64(bB.Int64()))
+	totBalance[models.TonSymbol] = bA.Int64() + bB.Int64()
+	p.balances.WriteBalance(SideA, models.TonSymbol, bA.Int64())
+	p.balances.WriteBalance(SideB, models.TonSymbol, bB.Int64())
 
 	for cur := range config.Config.Jettons {
 		bA, err = p.bcClient.GetLastJettonBalance(ctx, p.hotWalletsAddrA[cur])
@@ -272,7 +274,7 @@ func (p *PayerProcessor) updateHotWalletBalances(ctx context.Context) (map[strin
 }
 
 func (p *PayerProcessor) getDepositBalance(ctx context.Context, d Deposit) (int64, error) {
-	if d.Currency == core.TonSymbol {
+	if d.Currency == models.TonSymbol {
 		b, _, err := p.bcClient.GetAccountCurrentState(ctx, d.Address)
 		if err != nil {
 			return 0, err
@@ -313,7 +315,7 @@ func (p *PayerProcessor) startPayments(side PaymentSide) {
 }
 
 func (p *PayerProcessor) checkBalances(side PaymentSide) bool {
-	tonRemained := p.balances.ReadBalance(side, core.TonSymbol) - tonWithdrawAmount*depositsQty
+	tonRemained := p.balances.ReadBalance(side, models.TonSymbol) - tonWithdrawAmount*depositsQty
 	if tonRemained < tonMinCutoff {
 		return false
 	}
@@ -353,7 +355,7 @@ func (p *PayerProcessor) withdrawToDeposits(fromSide PaymentSide) ([]int64, []wi
 		ids []int64
 	)
 	for _, d := range deposits {
-		if d.Currency == core.TonSymbol {
+		if d.Currency == models.TonSymbol {
 			r, u, err := p.client.SendWithdrawal(url, d.Currency, d.Address.String(), tonWithdrawAmount)
 			if err != nil {
 				return nil, nil, err
@@ -364,8 +366,8 @@ func (p *PayerProcessor) withdrawToDeposits(fromSide PaymentSide) ([]int64, []wi
 				UUID:   u,
 			})
 			ids = append(ids, r.ID)
-			predictedTonLoss.Add(predictLoss(core.TonSymbol))
-			totalProcessedAmount.WithLabelValues(core.TonSymbol).Add(float64(tonWithdrawAmount))
+			predictedTonLoss.Add(predictLoss(models.TonSymbol))
+			totalProcessedAmount.WithLabelValues(models.TonSymbol).Add(float64(tonWithdrawAmount))
 		} else {
 			r, u, err := p.client.SendWithdrawal(url, d.Currency, d.Address.String(), jettonWithdrawAmount)
 			if err != nil {
@@ -406,7 +408,7 @@ func (p *PayerProcessor) waitWithdrawals(fromSide PaymentSide, ids []int64) erro
 			if err != nil {
 				return err
 			}
-			if r.Status == core.ProcessedStatus {
+			if r.Status == models.ProcessedStatus {
 				completed[id] = struct{}{}
 			} else {
 				time.Sleep(time.Millisecond * 200)
@@ -428,10 +430,10 @@ func (p *PayerProcessor) validateWithdrawals(ctx context.Context, fromSide Payme
 	)
 	switch fromSide {
 	case SideA:
-		addr = p.hotWalletsAddrA[core.TonSymbol]
+		addr = p.hotWalletsAddrA[models.TonSymbol]
 		lastTxID = p.lastTxIDA
 	case SideB:
-		addr = p.hotWalletsAddrB[core.TonSymbol]
+		addr = p.hotWalletsAddrB[models.TonSymbol]
 		lastTxID = p.lastTxIDB
 	default:
 		return fmt.Errorf("invalid side")
@@ -533,7 +535,11 @@ func parseTX(tx *tlb.Transaction) ([]withdrawal, []uuid.UUID, error) {
 		ww    []withdrawal
 		uuids []uuid.UUID
 	)
-	for _, m := range tx.IO.Out {
+	messages, err := tx.IO.Out.ToSlice()
+	if err != nil {
+		return nil, nil, err
+	}
+	for _, m := range messages {
 		if m.MsgType != tlb.MsgTypeInternal {
 			continue
 		}
@@ -583,12 +589,12 @@ func compareWithdrawals(all, target []withdrawal) []withdrawal {
 	return res
 }
 
-func getLastTxID(ctx context.Context, bcClient *blockchain.Connection, address *address.Address) (TxID, error) {
-	b, err := bcClient.GetMasterchainInfo(ctx)
+func getLastTxID(ctx context.Context, tonapi *ton.APIClient, address *address.Address) (TxID, error) {
+	b, err := tonapi.GetMasterchainInfo(ctx)
 	if err != nil {
 		return TxID{}, err
 	}
-	res, err := bcClient.GetAccount(ctx, b, address)
+	res, err := tonapi.GetAccount(ctx, b, address)
 	if err != nil {
 		return TxID{}, err
 	}
@@ -599,7 +605,7 @@ func getLastTxID(ctx context.Context, bcClient *blockchain.Connection, address *
 }
 
 func predictLoss(currency string) float64 {
-	if currency == core.TonSymbol {
+	if currency == models.TonSymbol {
 		cutoff := config.Config.Ton.Withdrawal.Int64()
 		n := math.Ceil(float64(cutoff) / float64(tonWithdrawAmount)) // number of replenishments of the deposit before withdrawal
 		return float64(TonLossForTonExternalWithdrawal) + float64(TonLossForTonInternalWithdrawal)/n

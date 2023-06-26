@@ -1,4 +1,4 @@
-package blockchain
+package core
 
 import (
 	"context"
@@ -6,7 +6,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/gobicycle/bicycle/core"
+	"github.com/gobicycle/bicycle/models"
 	log "github.com/sirupsen/logrus"
 	"github.com/xssnick/tonutils-go/tlb"
 	"github.com/xssnick/tonutils-go/ton"
@@ -15,22 +15,22 @@ import (
 const ErrBlockNotApplied = "block is not applied"
 
 type ShardTracker struct {
-	connection          *Connection
+	tonApi              *ton.APIClient
 	shard               byte
 	lastKnownShardBlock *ton.BlockIDExt
 	lastMasterBlock     *ton.BlockIDExt
-	blocksChan          chan *core.ShardBlockHeader
+	blocksChan          chan *models.ShardBlockHeader
 }
 
 // NewShardTracker creates new tracker to get blocks with specific shard attribute
 func NewShardTracker(
 	shard byte,
 	startBlock *ton.BlockIDExt,
-	connection *Connection,
-	blocksChan chan *core.ShardBlockHeader,
+	tonApi *ton.APIClient,
+	blocksChan chan *models.ShardBlockHeader,
 ) *ShardTracker {
 	t := &ShardTracker{
-		connection:          connection,
+		tonApi:              tonApi,
 		shard:               shard,
 		lastKnownShardBlock: startBlock,
 		blocksChan:          blocksChan,
@@ -41,7 +41,7 @@ func NewShardTracker(
 // Start scans for blocks.
 func (s *ShardTracker) Start(ctx context.Context) {
 	// the interval between blocks can be up to 40 seconds
-	ctx = s.connection.Client().StickyContext(ctx)
+	ctx = s.tonApi.Client().StickyContext(ctx)
 
 	for {
 		masterBlock, err := s.getCurrentMasterBlock(ctx)
@@ -65,7 +65,7 @@ func (s *ShardTracker) Stop() {
 
 func (s *ShardTracker) getCurrentMasterBlock(ctx context.Context) (*ton.BlockIDExt, error) {
 	for {
-		masterBlock, err := s.connection.client.GetMasterchainInfo(ctx)
+		masterBlock, err := s.tonApi.GetMasterchainInfo(ctx)
 		if err != nil {
 			// exit by context timeout
 			return nil, err
@@ -89,7 +89,7 @@ func (s *ShardTracker) loadShardBlocksBatch(ctx context.Context, masterBlock *to
 		err              error
 	)
 	for {
-		blocksShardsInfo, err = s.connection.client.GetBlockShardsInfo(ctx, masterBlock)
+		blocksShardsInfo, err = s.tonApi.GetBlockShardsInfo(ctx, masterBlock)
 		if err != nil && isNotReadyError(err) { // TODO: clarify error type
 			time.Sleep(time.Second)
 			continue
@@ -121,7 +121,7 @@ func (s *ShardTracker) getShardBlocks(ctx context.Context, i *ton.BlockIDExt) er
 			break
 		}
 
-		h, err := s.connection.getShardBlocksHeader(ctx, currentBlock, s.shard)
+		h, err := s.getShardBlocksHeader(ctx, currentBlock, s.shard)
 
 		if err != nil {
 			return err
@@ -159,13 +159,13 @@ func filterByShard(headers []*ton.BlockIDExt, shard byte) *ton.BlockIDExt {
 	return nil
 }
 
-func convertBlockToShardHeader(block *tlb.Block, info *ton.BlockIDExt, shard byte) (core.ShardBlockHeader, error) {
+func convertBlockToShardHeader(block *tlb.Block, info *ton.BlockIDExt, shard byte) (models.ShardBlockHeader, error) {
 	parents, err := block.BlockInfo.GetParentBlocks()
 	if err != nil {
-		return core.ShardBlockHeader{}, nil
+		return models.ShardBlockHeader{}, nil
 	}
 	parent := filterByShard(parents, shard)
-	return core.ShardBlockHeader{
+	return models.ShardBlockHeader{
 		NotMaster:  block.BlockInfo.NotMaster,
 		GenUtime:   block.BlockInfo.GenUtime,
 		StartLt:    block.BlockInfo.StartLt,
@@ -176,17 +176,17 @@ func convertBlockToShardHeader(block *tlb.Block, info *ton.BlockIDExt, shard byt
 }
 
 // get shard block header for specific shard attribute with one parent
-func (c *Connection) getShardBlocksHeader(ctx context.Context, shardBlockInfo *ton.BlockIDExt, shard byte) (core.ShardBlockHeader, error) {
+func (s *ShardTracker) getShardBlocksHeader(ctx context.Context, shardBlockInfo *ton.BlockIDExt, shard byte) (models.ShardBlockHeader, error) {
 	var (
 		err   error
 		block *tlb.Block
 	)
 	for {
-		block, err = c.client.GetBlockData(ctx, shardBlockInfo)
+		block, err = s.tonApi.GetBlockData(ctx, shardBlockInfo)
 		if err != nil && isNotReadyError(err) {
 			continue
 		} else if err != nil {
-			return core.ShardBlockHeader{}, err
+			return models.ShardBlockHeader{}, err
 			// exit by context timeout
 		}
 		break

@@ -4,36 +4,39 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math/big"
+	"math/rand"
+
 	"github.com/gobicycle/bicycle/audit"
 	"github.com/gobicycle/bicycle/config"
+	"github.com/gobicycle/bicycle/db"
+	"github.com/gobicycle/bicycle/models"
 	"github.com/gofrs/uuid"
 	log "github.com/sirupsen/logrus"
 	"github.com/xssnick/tonutils-go/address"
 	"github.com/xssnick/tonutils-go/tlb"
 	"github.com/xssnick/tonutils-go/ton/wallet"
 	"github.com/xssnick/tonutils-go/tvm/cell"
-	"math/big"
-	"math/rand"
 )
 
 type Wallets struct {
 	Shard            byte
 	TonHotWallet     *wallet.Wallet
-	TonBasicWallet   *wallet.Wallet // basic V3 wallet to make other wallets with different subwallet_id
-	JettonHotWallets map[string]JettonWallet
+	TonBasicWallet   *wallet.Wallet // basic wallet to make other wallets with different subwallet_id
+	JettonHotWallets map[string]models.JettonWallet
 }
 
 // InitWallets
-// Generates highload hot-wallet and map[currency]JettonWallet Jetton wallets, and saves to DB
+// Generates highload hot-wallet and map[currency]models.JettonWallet Jetton wallets, and saves to DB
 // TON highload hot-wallet (for seed and default subwallet_id) must be already active for success initialization.
 func InitWallets(
 	ctx context.Context,
-	db storage,
-	bc blockchain,
+	repo db.Repository,
+	bc Blockchain,
 	seed string,
 	jettons map[string]config.Jetton,
 ) (Wallets, error) {
-	tonHotWallet, shard, subwalletId, err := initTonHotWallet(ctx, db, bc, seed)
+	tonHotWallet, shard, subwalletId, err := initTonHotWallet(ctx, repo, bc, seed)
 	if err != nil {
 		return Wallets{}, err
 	}
@@ -44,9 +47,9 @@ func InitWallets(
 	}
 	// don't set TTL here because spec is not inherited by GetSubwallet method
 
-	jettonHotWallets := make(map[string]JettonWallet)
+	jettonHotWallets := make(map[string]models.JettonWallet)
 	for currency, j := range jettons {
-		w, err := initJettonHotWallet(ctx, db, bc, tonHotWallet.Address(), j.Master, currency, subwalletId)
+		w, err := initJettonHotWallet(ctx, repo, bc, tonHotWallet.Address(), j.Master, currency, subwalletId)
 		if err != nil {
 			return Wallets{}, err
 		}
@@ -63,8 +66,8 @@ func InitWallets(
 
 func initTonHotWallet(
 	ctx context.Context,
-	db storage,
-	bc blockchain,
+	repo db.Repository,
+	bc Blockchain,
 	seed string,
 ) (
 	tonHotWallet *wallet.Wallet,
@@ -79,16 +82,16 @@ func initTonHotWallet(
 	hotSpec := tonHotWallet.GetSpec().(*wallet.SpecHighloadV2R2)
 	hotSpec.SetMessagesTTL(uint32(config.ExternalMessageLifetime.Seconds()))
 
-	addr := AddressMustFromTonutilsAddress(tonHotWallet.Address())
+	addr := models.AddressMustFromTonutilsAddress(tonHotWallet.Address())
 	alreadySaved := false
-	addrFromDb, err := db.GetTonHotWalletAddress(ctx)
+	addrFromDb, err := repo.GetTonHotWalletAddress(ctx)
 	if err == nil && addr != addrFromDb {
-		audit.Log(audit.Error, string(TonHotWallet), InitEvent,
+		audit.Log(audit.Error, string(models.TonHotWallet), models.InitEvent,
 			fmt.Sprintf("Hot TON wallet address is not equal to the one stored in the database. Maybe seed was being changed. %s != %s",
 				tonHotWallet.Address().String(), addrFromDb.ToTonutilsAddressStd(0).String()))
 		return nil, 0, 0,
 			fmt.Errorf("saved hot wallet not equal generated hot wallet. Maybe seed was being changed")
-	} else if !errors.Is(err, ErrNotFound) && err != nil {
+	} else if !errors.Is(err, models.ErrNotFound) && err != nil {
 		return nil, 0, 0, err
 	} else if err == nil {
 		alreadySaved = true
@@ -112,10 +115,10 @@ func initTonHotWallet(
 		}
 	}
 	if !alreadySaved {
-		err = db.SaveTonWallet(ctx, WalletData{
+		err = repo.SaveTonWallet(ctx, models.WalletData{
 			SubwalletID: uint32(wallet.DefaultSubwallet),
-			Currency:    TonSymbol,
-			Type:        TonHotWallet,
+			Currency:    models.TonSymbol,
+			Type:        models.TonHotWallet,
 			Address:     addr,
 		})
 		if err != nil {
@@ -127,56 +130,56 @@ func initTonHotWallet(
 
 func initJettonHotWallet(
 	ctx context.Context,
-	db storage,
-	bc blockchain,
+	repo db.Repository,
+	bc Blockchain,
 	tonHotWallet, jettonMaster *address.Address,
 	currency string,
 	subwalletId uint32,
-) (JettonWallet, error) {
+) (models.JettonWallet, error) {
 	// not init or check balances of Jetton wallets, it is not required for the service to work
 	a, err := bc.GetJettonWalletAddress(ctx, tonHotWallet, jettonMaster)
 	if err != nil {
-		return JettonWallet{}, err
+		return models.JettonWallet{}, err
 	}
-	res := JettonWallet{Address: a, Currency: currency}
+	res := models.JettonWallet{Address: a, Currency: currency}
 	log.Infof("%v jetton hot wallet address: %v", currency, a.String())
 
-	ownerAddr, err := AddressFromTonutilsAddress(tonHotWallet)
+	ownerAddr, err := models.AddressFromTonutilsAddress(tonHotWallet)
 	if err != nil {
-		return JettonWallet{}, err
+		return models.JettonWallet{}, err
 	}
-	jettonWalletAddr, err := AddressFromTonutilsAddress(a)
+	jettonWalletAddr, err := models.AddressFromTonutilsAddress(a)
 	if err != nil {
-		return JettonWallet{}, err
+		return models.JettonWallet{}, err
 	}
 
-	walletData, isPresented, err := db.GetJettonWallet(ctx, jettonWalletAddr)
+	walletData, isPresented, err := repo.GetJettonWallet(ctx, jettonWalletAddr)
 	if err != nil {
-		return JettonWallet{}, err
+		return models.JettonWallet{}, err
 	}
 
 	if isPresented && walletData.Currency == currency {
 		return res, nil
 	} else if isPresented && walletData.Currency != currency {
-		audit.Log(audit.Error, string(JettonHotWallet), InitEvent,
+		audit.Log(audit.Error, string(models.JettonHotWallet), models.InitEvent,
 			fmt.Sprintf("Hot Jetton wallets %s and %s have the same address %s",
 				walletData.Currency, currency, a.String()))
-		return JettonWallet{}, fmt.Errorf("jetton hot wallet address duplication")
+		return models.JettonWallet{}, fmt.Errorf("jetton hot wallet address duplication")
 	}
 
-	err = db.SaveJettonWallet(
+	err = repo.SaveJettonWallet(
 		ctx,
 		ownerAddr,
-		WalletData{
+		models.WalletData{
 			SubwalletID: subwalletId,
 			Currency:    currency,
-			Type:        JettonHotWallet,
+			Type:        models.JettonHotWallet,
 			Address:     jettonWalletAddr,
 		},
 		true,
 	)
 	if err != nil {
-		return JettonWallet{}, err
+		return models.JettonWallet{}, err
 	}
 	return res, nil
 }
@@ -233,7 +236,7 @@ func WithdrawJettons(
 	from, to *wallet.Wallet,
 	jettonWallet *address.Address,
 	forwardAmount tlb.Coins,
-	amount Coins,
+	amount models.Coins,
 	comment string,
 ) error {
 	if from == nil || to == nil || to.Address() == nil {
@@ -289,7 +292,7 @@ func MakeJettonTransferMessage(
 
 }
 
-func BuildTonWithdrawalMessage(t ExternalWithdrawalTask) *wallet.Message {
+func BuildTonWithdrawalMessage(t models.ExternalWithdrawalTask) *wallet.Message {
 	return &wallet.Message{
 		Mode: 3,
 		InternalMessage: &tlb.InternalMessage{
@@ -303,7 +306,7 @@ func BuildTonWithdrawalMessage(t ExternalWithdrawalTask) *wallet.Message {
 }
 
 func BuildJettonWithdrawalMessage(
-	t ExternalWithdrawalTask,
+	t models.ExternalWithdrawalTask,
 	highloadWallet *wallet.Wallet,
 	fromJettonWallet *address.Address,
 ) *wallet.Message {

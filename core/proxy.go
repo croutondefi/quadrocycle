@@ -3,7 +3,9 @@ package core
 import (
 	"encoding/hex"
 	"fmt"
+
 	"github.com/gobicycle/bicycle/config"
+	"github.com/gobicycle/bicycle/models"
 	log "github.com/sirupsen/logrus"
 	"github.com/xssnick/tonutils-go/address"
 	"github.com/xssnick/tonutils-go/tlb"
@@ -29,7 +31,7 @@ func NewJettonProxy(subwalletId uint32, owner *address.Address) (*JettonProxy, e
 	if err != nil {
 		return nil, fmt.Errorf("failed to get state cell: %w", err)
 	}
-	addr := address.NewAddress(0, DefaultWorkchain, stateCell.Hash())
+	addr := address.NewAddress(0, models.DefaultWorkchain, stateCell.Hash())
 
 	return &JettonProxy{
 		Owner:       owner,

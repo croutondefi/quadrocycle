@@ -1,18 +1,20 @@
-package db
+package db_test
 
 import (
 	"context"
 	"encoding/hex"
-	"github.com/gobicycle/bicycle/core"
 	"os"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/gobicycle/bicycle/models"
+	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 var dbURI string
 
-func execMultiStatement(c *Connection, ctx context.Context, query string) error {
+func execMultiStatement(c Repository, ctx context.Context, query string) error {
 	query = strings.TrimPrefix(query, "BEGIN;")
 	query = strings.TrimSuffix(query, "COMMIT;")
 	queries := strings.Split(query, ";")
@@ -32,7 +34,7 @@ func execMultiStatement(c *Connection, ctx context.Context, query string) error 
 	return err
 }
 
-func migrateUp(c *Connection, t *testing.T, source string) error {
+func migrateUp(c Repository, t *testing.T, source string) error {
 	migrateDown(c, t)
 	deploy, err := os.ReadFile("../deploy/db/01_init.up.sql")
 	if err != nil {
@@ -53,7 +55,7 @@ func migrateUp(c *Connection, t *testing.T, source string) error {
 	return nil
 }
 
-func migrateDown(c *Connection, t *testing.T) {
+func migrateDown(c Repository, t *testing.T) {
 	drop, err := os.ReadFile("../deploy/db/01_init.down.sql")
 	if err != nil {
 		t.Fatal("migrate down err: ", err)
@@ -71,8 +73,13 @@ func init() {
 	}
 }
 
-func connect(t *testing.T) *Connection {
-	c, err := NewConnection(dbURI)
+func connect(t *testing.T) Repository {
+	client, err := pgxpool.New(context.Background(), dbURI)
+	if err != nil {
+		t.Fatalf("DB connection error: %v", err)
+	}
+
+	c, err := NewRepository(context.Background(), client)
 	if err != nil {
 		t.Fatal("connections err: ", err)
 	}
@@ -118,7 +125,7 @@ func Test_GetJettonInternalWithdrawalTasks(t *testing.T) {
 	defer migrateDown(c, t)
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second*2)
 	defer cancel()
-	res, err := c.GetJettonInternalWithdrawalTasks(ctx, []core.Address{}, 250)
+	res, err := c.GetJettonInternalWithdrawalTasks(ctx, []models.Address{}, 250)
 	if err != nil {
 		t.Fatal("get tasks err: ", err)
 	}
@@ -147,9 +154,9 @@ func Test_GetJettonInternalWithdrawalTasksForbidden(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second*2)
 	defer cancel()
 	b, _ := hex.DecodeString("01aa00004767fbcf859609200910269446980f4d27bd8f4e3faa6e4d74792ab3") // owner of Jetton deposit A
-	var forbiddenAddress core.Address
+	var forbiddenAddress models.Address
 	copy(forbiddenAddress[:], b)
-	res, err := c.GetJettonInternalWithdrawalTasks(ctx, []core.Address{forbiddenAddress}, 250)
+	res, err := c.GetJettonInternalWithdrawalTasks(ctx, []models.Address{forbiddenAddress}, 250)
 	if err != nil {
 		t.Fatal("get tasks err: ", err)
 	}

@@ -1,4 +1,4 @@
-package blockchain
+package core
 
 import (
 	"context"
@@ -10,20 +10,19 @@ import (
 	"time"
 
 	"github.com/gobicycle/bicycle/config"
-	"github.com/gobicycle/bicycle/core"
+	"github.com/gobicycle/bicycle/models"
 	log "github.com/sirupsen/logrus"
 	"github.com/tonkeeper/tongo"
 	"github.com/tonkeeper/tongo/boc"
 	tongoTlb "github.com/tonkeeper/tongo/tlb"
 	"github.com/tonkeeper/tongo/tvm"
 	"github.com/xssnick/tonutils-go/address"
-	"github.com/xssnick/tonutils-go/liteclient"
 	"github.com/xssnick/tonutils-go/tlb"
 	"github.com/xssnick/tonutils-go/ton"
 	"github.com/xssnick/tonutils-go/ton/wallet"
 )
 
-type Connection struct {
+type connection struct {
 	client               *ton.APIClient
 	defaultWalletVersion wallet.Version
 }
@@ -35,30 +34,34 @@ type contract struct {
 }
 
 // NewConnection creates new Blockchain connection
-func NewConnection(configURL string, defaultVersion wallet.Version) (*Connection, error) {
-	client := liteclient.NewConnectionPool()
-	ctx, cancel := context.WithTimeout(context.Background(), time.Second*30)
-	defer cancel()
-
-	err := client.AddConnectionsFromConfigUrl(ctx, configURL)
+func NewConnection(ctx context.Context, tonApi *ton.APIClient, defaultVersion wallet.Version) (Blockchain, error) {
+	conn := &connection{tonApi, defaultVersion}
+	isTimeSynced, err := conn.isTimeSynced(ctx, config.AllowableServiceToNodeTimeDiff)
 	if err != nil {
-		return nil, fmt.Errorf("connection err: %v", err.Error())
+		log.Fatalf("get node time err: %v", err)
 	}
-	return &Connection{ton.NewAPIClient(client), defaultVersion}, nil
+	if !isTimeSynced {
+		log.Fatalf("Service and Node time not synced")
+	}
+	return conn, nil
+}
+
+func (c *connection) StickyContext(ctx context.Context) context.Context {
+	return c.client.Client().StickyContext(ctx)
 }
 
 // GenerateDefaultWallet generates HighloadV2R2 or V3R2 TON wallet with
 // default subwallet_id and returns wallet, shard and subwalletID
-func (c *Connection) GenerateDefaultWallet(seed string, isHighload bool) (
+func (c *connection) GenerateDefaultWallet(seed string, isHighload bool) (
 	w *wallet.Wallet,
 	shard byte,
 	subwalletID uint32, err error,
 ) {
 	words := strings.Split(seed, " ")
 	if isHighload {
-		w, err = wallet.FromSeed(c, words, wallet.HighloadV2R2)
+		w, err = wallet.FromSeed(c.client, words, wallet.HighloadV2R2)
 	} else {
-		w, err = wallet.FromSeed(c, words, c.defaultWalletVersion)
+		w, err = wallet.FromSeed(c.client, words, c.defaultWalletVersion)
 	}
 	if err != nil {
 		return nil, 0, 0, err
@@ -68,9 +71,9 @@ func (c *Connection) GenerateDefaultWallet(seed string, isHighload bool) (
 
 // GenerateSubWallet generates subwallet for custom shard and
 // subwallet_id >= startSubWalletId and returns wallet and new subwallet_id
-func (c *Connection) GenerateSubWallet(seed string, shard byte, startSubWalletID uint32) (*wallet.Wallet, uint32, error) {
+func (c *connection) GenerateSubWallet(seed string, shard byte, startSubWalletID uint32) (*wallet.Wallet, uint32, error) {
 	words := strings.Split(seed, " ")
-	basic, err := wallet.FromSeed(c, words, wallet.V3)
+	basic, err := wallet.FromSeed(c.client, words, wallet.V3)
 	if err != nil {
 		return nil, 0, err
 	}
@@ -79,7 +82,7 @@ func (c *Connection) GenerateSubWallet(seed string, shard byte, startSubWalletID
 		if err != nil {
 			return nil, 0, err
 		}
-		addr, err := core.AddressFromTonutilsAddress(subWallet.Address())
+		addr, err := models.AddressFromTonutilsAddress(subWallet.Address())
 		if err != nil {
 			return nil, 0, err
 		}
@@ -91,7 +94,7 @@ func (c *Connection) GenerateSubWallet(seed string, shard byte, startSubWalletID
 }
 
 // GetJettonWalletAddress generates jetton wallet address from owner and jetton master addresses
-func (c *Connection) GetJettonWalletAddress(
+func (c *connection) GetJettonWalletAddress(
 	ctx context.Context,
 	owner *address.Address,
 	jettonMaster *address.Address,
@@ -115,13 +118,13 @@ func (c *Connection) GetJettonWalletAddress(
 
 // GenerateDepositJettonWalletForProxy
 // Generates jetton wallet address for custom shard and proxy contract as owner with subwallet_id >= startSubWalletId
-func (c *Connection) GenerateDepositJettonWalletForProxy(
+func (c *connection) GenerateDepositJettonWalletForProxy(
 	ctx context.Context,
 	shard byte,
 	proxyOwner, jettonMaster *address.Address,
 	startSubWalletID uint32,
 ) (
-	proxy *core.JettonProxy,
+	proxy *JettonProxy,
 	addr *address.Address,
 	err error,
 ) {
@@ -135,7 +138,7 @@ func (c *Connection) GenerateDepositJettonWalletForProxy(
 	}
 
 	for id := startSubWalletID; id < math.MaxUint32; id++ {
-		proxy, err = core.NewJettonProxy(id, proxyOwner)
+		proxy, err = NewJettonProxy(id, proxyOwner)
 		if err != nil {
 			return nil, nil, err
 		}
@@ -152,7 +155,7 @@ func (c *Connection) GenerateDepositJettonWalletForProxy(
 	return nil, nil, fmt.Errorf("jetton wallet address not found")
 }
 
-func (c *Connection) getContract(ctx context.Context, addr *address.Address) (contract, error) {
+func (c *connection) getContract(ctx context.Context, addr *address.Address) (contract, error) {
 	block, err := c.client.CurrentMasterchainInfo(ctx)
 	if err != nil {
 		return contract{}, err
@@ -189,81 +192,81 @@ func (c *Connection) getContract(ctx context.Context, addr *address.Address) (co
 	}, nil
 }
 
-func getJettonWalletAddress(
-	ctx context.Context,
-	owner *address.Address,
-	jettonMaster *address.Address,
-	client *ton.APIClient,
-) (*address.Address, error) {
-	// client.RunGetMethod(ctx)
-	// ownerAccountID, err := tongo.ParseAccountID(owner.String())
-	// if err != nil {
-	// 	return core.Address{}, err
-	// }
-	// slice, err := tongoTlb.TlbStructToVmCellSlice(ownerAccountID.ToMsgAddress())
-	// if err != nil {
-	// 	return core.Address{}, err
-	// }
+// func getJettonWalletAddress(
+// 	ctx context.Context,
+// 	owner *address.Address,
+// 	jettonMaster *address.Address,
+// 	client *ton.APIClient,
+// ) (*address.Address, error) {
+// 	client.RunGetMethod(ctx)
+// 	ownerAccountID, err := tongo.ParseAccountID(owner.String())
+// 	if err != nil {
+// 		return models.Address{}, err
+// 	}
+// 	slice, err := tongoTlb.TlbStructToVmCellSlice(ownerAccountID.ToMsgAddress())
+// 	if err != nil {
+// 		return models.Address{}, err
+// 	}
 
-	// code, result, err := emulator.RunSmcMethod(context.Background(), jettonMaster, "get_wallet_address",
-	// 	tongoTlb.VmStack{slice})
-	// if err != nil {
-	// 	return core.Address{}, err
-	// }
-	// if code != 0 || len(result) != 1 || result[0].SumType != "VmStkSlice" {
-	// 	return core.Address{}, fmt.Errorf("tvm execution failed")
-	// }
+// 	code, result, err := emulator.RunSmcMethod(context.Background(), jettonMaster, "get_wallet_address",
+// 		tongoTlb.VmStack{slice})
+// 	if err != nil {
+// 		return models.Address{}, err
+// 	}
+// 	if code != 0 || len(result) != 1 || result[0].SumType != "VmStkSlice" {
+// 		return models.Address{}, fmt.Errorf("tvm execution failed")
+// 	}
 
-	// var msgAddress tongoTlb.MsgAddress
-	// err = result[0].VmStkSlice.UnmarshalToTlbStruct(&msgAddress)
-	// if err != nil {
-	// 	return core.Address{}, err
-	// }
-	// if msgAddress.SumType != "AddrStd" {
-	// 	return core.Address{}, fmt.Errorf("not std jetton wallet address")
-	// }
-	// if msgAddress.AddrStd.WorkchainId != core.DefaultWorkchain {
-	// 	return core.Address{}, fmt.Errorf("not default workchain for jetton wallet address")
-	// }
-	// return core.Address(msgAddress.AddrStd.Address), nil
-	return nil, nil
-}
+// 	var msgAddress tongoTlb.MsgAddress
+// 	err = result[0].VmStkSlice.UnmarshalToTlbStruct(&msgAddress)
+// 	if err != nil {
+// 		return models.Address{}, err
+// 	}
+// 	if msgAddress.SumType != "AddrStd" {
+// 		return models.Address{}, fmt.Errorf("not std jetton wallet address")
+// 	}
+// 	if msgAddress.AddrStd.WorkchainId != models.DefaultWorkchain {
+// 		return models.Address{}, fmt.Errorf("not default workchain for jetton wallet address")
+// 	}
+// 	return models.Address(msgAddress.AddrStd.Address), nil
+// 	return nil, nil
+// }
 
 func getJettonWalletAddressByTVM(
 	owner *address.Address,
 	jettonMaster tongo.AccountID,
 	emulator *tvm.Emulator,
-) (core.Address, error) {
+) (models.Address, error) {
 	ownerAccountID, err := tongo.ParseAccountID(owner.String())
 	if err != nil {
-		return core.Address{}, err
+		return models.Address{}, err
 	}
 	slice, err := tongoTlb.TlbStructToVmCellSlice(ownerAccountID.ToMsgAddress())
 	if err != nil {
-		return core.Address{}, err
+		return models.Address{}, err
 	}
 
 	code, result, err := emulator.RunSmcMethod(context.Background(), jettonMaster, "get_wallet_address",
 		tongoTlb.VmStack{slice})
 	if err != nil {
-		return core.Address{}, err
+		return models.Address{}, err
 	}
 	if code != 0 || len(result) != 1 || result[0].SumType != "VmStkSlice" {
-		return core.Address{}, fmt.Errorf("tvm execution failed")
+		return models.Address{}, fmt.Errorf("tvm execution failed")
 	}
 
 	var msgAddress tongoTlb.MsgAddress
 	err = result[0].VmStkSlice.UnmarshalToTlbStruct(&msgAddress)
 	if err != nil {
-		return core.Address{}, err
+		return models.Address{}, err
 	}
 	if msgAddress.SumType != "AddrStd" {
-		return core.Address{}, fmt.Errorf("not std jetton wallet address")
+		return models.Address{}, fmt.Errorf("not std jetton wallet address")
 	}
-	if msgAddress.AddrStd.WorkchainId != core.DefaultWorkchain {
-		return core.Address{}, fmt.Errorf("not default workchain for jetton wallet address")
+	if msgAddress.AddrStd.WorkchainId != models.DefaultWorkchain {
+		return models.Address{}, fmt.Errorf("not default workchain for jetton wallet address")
 	}
-	return core.Address(msgAddress.AddrStd.Address), nil
+	return models.Address(msgAddress.AddrStd.Address), nil
 }
 
 func newEmulator(code, data *boc.Cell) (*tvm.Emulator, error) {
@@ -282,7 +285,7 @@ func newEmulator(code, data *boc.Cell) (*tvm.Emulator, error) {
 // GetJettonBalance
 // Get method get_wallet_data() returns (int balance, slice owner, slice jetton, cell jetton_wallet_code)
 // Returns jetton balance for custom block in basic units
-func (c *Connection) GetJettonBalance(ctx context.Context, address core.Address, blockID *ton.BlockIDExt) (*big.Int, error) {
+func (c *connection) GetJettonBalance(ctx context.Context, address models.Address, blockID *ton.BlockIDExt) (*big.Int, error) {
 	jettonWallet := address.ToTonutilsAddressStd(0)
 	stack, err := c.RunGetMethod(ctx, blockID, jettonWallet, "get_wallet_data")
 	if err != nil {
@@ -305,12 +308,12 @@ func (c *Connection) GetJettonBalance(ctx context.Context, address core.Address,
 
 // GetLastJettonBalance
 // Returns jetton balance for last block in basic units
-func (c *Connection) GetLastJettonBalance(ctx context.Context, address *address.Address) (*big.Int, error) {
+func (c *connection) GetLastJettonBalance(ctx context.Context, address *address.Address) (*big.Int, error) {
 	masterID, err := c.client.CurrentMasterchainInfo(ctx)
 	if err != nil {
 		return nil, err
 	}
-	addr, err := core.AddressFromTonutilsAddress(address)
+	addr, err := models.AddressFromTonutilsAddress(address)
 	if err != nil {
 		return nil, err
 	}
@@ -319,7 +322,7 @@ func (c *Connection) GetLastJettonBalance(ctx context.Context, address *address.
 
 // GetAccountCurrentState
 // Returns TON balance in nanoTONs and account status
-func (c *Connection) GetAccountCurrentState(ctx context.Context, address *address.Address) (*big.Int, tlb.AccountStatus, error) {
+func (c *connection) GetAccountCurrentState(ctx context.Context, address *address.Address) (*big.Int, tlb.AccountStatus, error) {
 	masterID, err := c.client.CurrentMasterchainInfo(ctx)
 	if err != nil {
 		return nil, "", err
@@ -336,7 +339,7 @@ func (c *Connection) GetAccountCurrentState(ctx context.Context, address *addres
 
 // DeployTonWallet
 // Deploys wallet contract and wait its activation
-func (c *Connection) DeployTonWallet(ctx context.Context, wallet *wallet.Wallet) error {
+func (c *connection) DeployTonWallet(ctx context.Context, wallet *wallet.Wallet) error {
 	balance, status, err := c.GetAccountCurrentState(ctx, wallet.Address())
 	if err != nil {
 		return err
@@ -357,7 +360,7 @@ func (c *Connection) DeployTonWallet(ctx context.Context, wallet *wallet.Wallet)
 
 // GetTransactionIDsFromBlock
 // Gets all transactions IDs from custom block
-func (c *Connection) GetTransactionIDsFromBlock(ctx context.Context, blockID *ton.BlockIDExt) ([]ton.TransactionShortInfo, error) {
+func (c *connection) GetTransactionIDsFromBlock(ctx context.Context, blockID *ton.BlockIDExt) ([]ton.TransactionShortInfo, error) {
 	var (
 		txIDList []ton.TransactionShortInfo
 		after    *ton.TransactionID3
@@ -384,7 +387,7 @@ func (c *Connection) GetTransactionIDsFromBlock(ctx context.Context, blockID *to
 
 // GetTransactionFromBlock
 // Gets transaction from block
-func (c *Connection) GetTransactionFromBlock(ctx context.Context, blockID *ton.BlockIDExt, txID ton.TransactionShortInfo) (*tlb.Transaction, error) {
+func (c *connection) GetTransactionFromBlock(ctx context.Context, blockID *ton.BlockIDExt, txID ton.TransactionShortInfo) (*tlb.Transaction, error) {
 	tx, err := c.client.GetTransaction(ctx, blockID, address.NewAddress(0, byte(blockID.Workchain), txID.Account), txID.LT)
 	if err != nil {
 		return nil, err
@@ -392,11 +395,11 @@ func (c *Connection) GetTransactionFromBlock(ctx context.Context, blockID *ton.B
 	return tx, nil
 }
 
-func inShard(addr core.Address, shard byte) bool {
+func inShard(addr models.Address, shard byte) bool {
 	return addr[0] == shard
 }
 
-func (c *Connection) getCurrentNodeTime(ctx context.Context) (time.Time, error) {
+func (c *connection) getCurrentNodeTime(ctx context.Context) (time.Time, error) {
 	t, err := c.client.GetTime(ctx)
 	if err != nil {
 		return time.Time{}, err
@@ -405,11 +408,11 @@ func (c *Connection) getCurrentNodeTime(ctx context.Context) (time.Time, error) 
 	return res, nil
 }
 
-// CheckTime
+// isTimeSynced
 // Checks time diff between node and local time. Due to the fact that the request to the node takes time,
 // the local time is defined as the average between the beginning and end of the request.
 // Returns true if time diff < cutoff.
-func (c *Connection) CheckTime(ctx context.Context, cutoff time.Duration) (bool, error) {
+func (c *connection) isTimeSynced(ctx context.Context, cutoff time.Duration) (bool, error) {
 	prevTime := time.Now()
 	nodeTime, err := c.getCurrentNodeTime(ctx)
 	if err != nil {
@@ -428,11 +431,11 @@ func (c *Connection) CheckTime(ctx context.Context, cutoff time.Duration) (bool,
 // WaitStatus
 // Waits custom status for account. Returns error if context timeout is exceeded.
 // Context must be with timeout to avoid blocking!
-func (c *Connection) WaitStatus(ctx context.Context, addr *address.Address, status tlb.AccountStatus) error {
+func (c *connection) WaitStatus(ctx context.Context, addr *address.Address, status tlb.AccountStatus) error {
 	for {
 		select {
 		case <-ctx.Done():
-			return core.ErrTimeoutExceeded
+			return models.ErrTimeoutExceeded
 		default:
 			_, st, err := c.GetAccountCurrentState(ctx, addr)
 			if err != nil {
@@ -451,7 +454,7 @@ func (c *Connection) WaitStatus(ctx context.Context, addr *address.Address, stat
 // GetAccount
 // The method is being redefined for more stable operation.
 // Gets account from prev block if impossible to get it from current block. Be careful with diff calculation between blocks.
-func (c *Connection) GetAccount(ctx context.Context, block *ton.BlockIDExt, addr *address.Address) (*tlb.Account, error) {
+func (c *connection) GetAccount(ctx context.Context, block *ton.BlockIDExt, addr *address.Address) (*tlb.Account, error) {
 	res, err := c.client.GetAccount(ctx, block, addr)
 	if err != nil && strings.Contains(err.Error(), ErrBlockNotApplied) {
 		prevBlock, err := c.client.LookupBlock(ctx, block.Workchain, block.Shard, block.SeqNo-1)
@@ -463,18 +466,18 @@ func (c *Connection) GetAccount(ctx context.Context, block *ton.BlockIDExt, addr
 	return res, err
 }
 
-func (c *Connection) SendExternalMessage(ctx context.Context, msg *tlb.ExternalMessage) error {
+func (c *connection) SendExternalMessage(ctx context.Context, msg *tlb.ExternalMessage) error {
 	return c.client.SendExternalMessage(ctx, msg)
 }
 
 // RunGetMethod
 // The method is being redefined for more stable operation
 // Wait until BlockIsApplied. Use context with  timeout.
-func (c *Connection) RunGetMethod(ctx context.Context, block *ton.BlockIDExt, addr *address.Address, method string, params ...any) (*ton.ExecutionResult, error) {
+func (c *connection) RunGetMethod(ctx context.Context, block *ton.BlockIDExt, addr *address.Address, method string, params ...any) (*ton.ExecutionResult, error) {
 	for {
 		select {
 		case <-ctx.Done():
-			return nil, core.ErrTimeoutExceeded
+			return nil, models.ErrTimeoutExceeded
 		default:
 			res, err := c.client.RunGetMethod(ctx, block, addr, method, params...)
 			if err != nil && strings.Contains(err.Error(), ErrBlockNotApplied) {
@@ -486,22 +489,18 @@ func (c *Connection) RunGetMethod(ctx context.Context, block *ton.BlockIDExt, ad
 	}
 }
 
-func (c *Connection) ListTransactions(ctx context.Context, addr *address.Address, num uint32, lt uint64, txHash []byte) ([]*tlb.Transaction, error) {
+func (c *connection) ListTransactions(ctx context.Context, addr *address.Address, num uint32, lt uint64, txHash []byte) ([]*tlb.Transaction, error) {
 	return c.client.ListTransactions(ctx, addr, num, lt, txHash)
 }
 
-func (c *Connection) WaitNextMasterBlock(ctx context.Context, master *ton.BlockIDExt) (*ton.BlockIDExt, error) {
+func (c *connection) WaitNextMasterBlock(ctx context.Context, master *ton.BlockIDExt) (*ton.BlockIDExt, error) {
 	return c.client.WaitNextMasterBlock(ctx, master)
 }
 
-func (c *Connection) Client() ton.LiteClient {
-	return c.client.Client()
-}
-
-func (c *Connection) CurrentMasterchainInfo(ctx context.Context) (*ton.BlockIDExt, error) {
+func (c *connection) CurrentMasterchainInfo(ctx context.Context) (*ton.BlockIDExt, error) {
 	return c.client.CurrentMasterchainInfo(ctx)
 }
 
-func (c *Connection) GetMasterchainInfo(ctx context.Context) (*ton.BlockIDExt, error) {
+func (c *connection) GetMasterchainInfo(ctx context.Context) (*ton.BlockIDExt, error) {
 	return c.client.GetMasterchainInfo(ctx)
 }

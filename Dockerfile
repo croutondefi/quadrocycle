@@ -13,8 +13,8 @@ COPY go.mod .
 COPY go.sum .
 RUN go mod download all
 COPY api api
-COPY blockchain blockchain
-COPY cmd cmd
+COPY models models
+COPY cmd/processor cmd/processor
 COPY config config
 COPY core core
 COPY db db
@@ -23,7 +23,7 @@ COPY queue queue
 COPY webhook webhook
 RUN  git clone https://github.com/tonkeeper/tongo /tmp/tongo
 RUN go build -o /tmp/processor github.com/gobicycle/bicycle/cmd/processor
-RUN go build -o /tmp/testutil github.com/gobicycle/bicycle/cmd/testutil
+# RUN go build -o /tmp/testutil github.com/gobicycle/bicycle/cmd/testutil
 
 FROM docker.io/library/ubuntu:20.04 AS payment-processor
 RUN apt-get update && apt-get -y install zlib1g-dev libssl-dev openssl ca-certificates && rm -rf /var/lib/apt/lists/*

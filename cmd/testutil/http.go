@@ -4,15 +4,16 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
-	"github.com/gobicycle/bicycle/api"
-	"github.com/gobicycle/bicycle/config"
-	"github.com/gobicycle/bicycle/core"
-	"github.com/gofrs/uuid"
-	"github.com/shopspring/decimal"
 	"io"
 	"log"
 	"net/http"
 	"time"
+
+	"github.com/gobicycle/bicycle/api"
+	"github.com/gobicycle/bicycle/config"
+	"github.com/gobicycle/bicycle/models"
+	"github.com/gofrs/uuid"
+	"github.com/shopspring/decimal"
 )
 
 type Client struct {
@@ -47,11 +48,11 @@ func (s *Client) InitDeposits(host string) (map[string][]string, error) {
 		return deposits, nil
 	}
 	for i := 0; i < depositsQty; i++ {
-		addr, err := s.GetNewAddress(host, core.TonSymbol)
+		addr, err := s.GetNewAddress(host, models.TonSymbol)
 		if err != nil {
 			return nil, err
 		}
-		deposits[core.TonSymbol] = append(deposits[core.TonSymbol], addr)
+		deposits[models.TonSymbol] = append(deposits[models.TonSymbol], addr)
 	}
 	for i := 0; i < depositsQty; i++ {
 		for cur := range config.Config.Jettons {
