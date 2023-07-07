@@ -5,25 +5,19 @@ import (
 	"net/http"
 
 	"github.com/gobicycle/bicycle/api/usecases"
-	"github.com/gobicycle/bicycle/config"
-	"github.com/gobicycle/bicycle/core"
-	"github.com/gobicycle/bicycle/db"
-	"github.com/gobicycle/bicycle/models"
 	log "github.com/sirupsen/logrus"
 	"github.com/uptrace/bunrouter"
-	"github.com/xssnick/tonutils-go/address"
 )
 
 type Handler struct {
-	repo               db.Repository
-	blockchain         core.Blockchain
-	shard              byte
-	hotWalletAddress   address.Address
 	withdrawalUsecases usecases.WithdrawalUsecases
+	incomeUsecases     usecases.IncomeUsecases
+	AddressUsecases    usecases.AddressUsecases
+	SyncUsecases       usecases.SyncUsecases
 }
 
-func NewHandler(repo db.Repository, b core.Blockchain, shard byte, hotWalletAddress address.Address) *Handler {
-	return &Handler{repo: repo, blockchain: b, shard: shard, hotWalletAddress: hotWalletAddress}
+func NewHandler() *Handler {
+	return &Handler{}
 }
 
 func (h *Handler) Register(g *bunrouter.Group) {
@@ -37,16 +31,9 @@ func (h *Handler) Register(g *bunrouter.Group) {
 
 	g.GET("/system/sync", h.getSync)
 
-	g.GET("/income", h.getIncome)
+	g.GET("/income/:type", h.getIncome)
 
 	g.GET("/deposit/history", h.getIncomeHistory)
-}
-
-func isValidCurrency(cur string) bool {
-	if _, ok := config.Config.Jettons[cur]; ok || cur == models.TonSymbol {
-		return true
-	}
-	return false
 }
 
 func writeHttpError(resp http.ResponseWriter, status int, comment string) {

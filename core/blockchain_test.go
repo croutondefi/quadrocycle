@@ -9,9 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/gobicycle/bicycle/config"
 	"github.com/gobicycle/bicycle/models"
-	"github.com/tonkeeper/tongo/boc"
 	"github.com/xssnick/tonutils-go/address"
 	"github.com/xssnick/tonutils-go/tlb"
 	"github.com/xssnick/tonutils-go/ton/jetton"
@@ -25,11 +23,7 @@ var (
 )
 
 func init() {
-	conf, err := boc.DeserializeBocBase64(config.TestnetConfig)
-	if err != nil {
-		panic(err)
-	}
-	config.Config.BlockchainConfig = conf[0]
+
 }
 
 func connect(t *testing.T) *Connection {

@@ -14,10 +14,12 @@ import (
 	"github.com/gobicycle/bicycle/api/handlers"
 	"github.com/gobicycle/bicycle/config"
 	"github.com/gobicycle/bicycle/core"
+	"github.com/gobicycle/bicycle/core/wallet"
 	"github.com/gobicycle/bicycle/db"
 	"github.com/gobicycle/bicycle/models"
 	"github.com/gobicycle/bicycle/queue"
 	"github.com/gobicycle/bicycle/webhook"
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	log "github.com/sirupsen/logrus"
 	"github.com/uptrace/bunrouter"
@@ -44,14 +46,31 @@ func main() {
 
 	tonApi := ton.NewAPIClient(lClient)
 
-	bcClient, err := core.NewConnection(ctx, tonApi, config.Config.DefaultWalletVersion)
+	bcClient, err := core.NewConnection(ctx, tonApi)
 	if err != nil {
 		log.Fatalf("blockchain connection error: %v", err)
+	}
+
+	fmt.Println("config.Config.DatabaseURI", config.Config.DatabaseURI)
+
+	conn, err := pgx.Connect(ctx, config.Config.DatabaseURI)
+	if err != nil {
+		log.Fatalf("DB connection error: %v", err)
+	}
+
+	err = conn.Ping(ctx)
+	if err != nil {
+		log.Fatalf("failed to ping db: %v", err)
 	}
 
 	pool, err := pgxpool.New(ctx, config.Config.DatabaseURI)
 	if err != nil {
 		log.Fatalf("DB connection error: %v", err)
+	}
+
+	err = pool.Ping(ctx)
+	if err != nil {
+		log.Fatalf("failed to ping db: %v", err)
 	}
 
 	defer pool.Close()
@@ -61,10 +80,26 @@ func main() {
 		log.Fatalf("address book loading error: %v", err)
 	}
 
-	wallets, err := core.InitWallets(ctx, repo, bcClient, config.Config.Seed, config.Config.Jettons)
-	if err != nil {
-		log.Fatalf("Hot wallets initialization error: %v", err)
+	startBlock, err := repo.GetLastSavedBlock(ctx)
+
+	fmt.Println("startBlock ", startBlock, err)
+
+	if err != nil && !errors.Is(err, models.ErrNotFound) {
+		log.Fatalf("Get last saved block error: %v", err)
 	}
+
+	fmt.Println("before wallet.InitWallets")
+
+	wallets, err := wallet.InitWallets(
+		ctx,
+		repo,
+		bcClient,
+		config.Config.Seed,
+		config.Config.Jettons,
+		config.Config.DefaultWalletVersion,
+	)
+
+	fmt.Println("after wallet.InitWallets")
 
 	var notificators []models.Notificator
 
@@ -76,6 +111,8 @@ func main() {
 		notificators = append(notificators, queueClient)
 	}
 
+	fmt.Println("11")
+
 	if config.Config.WebhookEndpoint != "" {
 		webhookClient, err := webhook.NewWebhookClient(config.Config.WebhookEndpoint, config.Config.WebhookToken)
 		if err != nil {
@@ -84,22 +121,20 @@ func main() {
 		notificators = append(notificators, webhookClient)
 	}
 
+	fmt.Println("22")
+
 	scannerCtx, scannerCancel := context.WithCancel(context.Background())
 	defer scannerCancel()
 
 	blocksChan = make(chan *models.ShardBlockHeader)
 
-	var startBlock *ton.BlockIDExt
-	startBlock, err = repo.GetLastSavedBlockID(ctx)
+	fmt.Println("33")
 
-	if err != nil && !errors.Is(err, models.ErrNotFound) {
-		log.Fatalf("Get last saved block error: %v", err)
-	}
-	tracker := core.NewShardTracker(wallets.Shard, startBlock, tonApi, blocksChan)
+	tracker := core.NewShardTracker(wallets.Shard(), startBlock.BlockIDExt, tonApi, blocksChan)
 
 	go tracker.Start(scannerCtx)
 
-	blockScanner := core.NewBlockScanner(repo, bcClient, wallets.Shard, notificators, blocksChan)
+	blockScanner := core.NewBlockScanner(repo, bcClient, wallets, notificators, blocksChan)
 	go blockScanner.Start(scannerCtx)
 
 	withdrawalsProcessor := core.NewWithdrawalsProcessor(
@@ -112,8 +147,7 @@ func main() {
 		bunrouter.Use(api.AuthMiddleware()),
 		bunrouter.WithNotFoundHandler(notFoundHandler),
 	)
-
-	h := handlers.NewHandler(repo, bcClient, wallets.Shard, *wallets.TonHotWallet.Address())
+	h := handlers.NewHandler()
 
 	router.WithGroup("/v1", func(group *bunrouter.Group) {
 		h.Register(group)

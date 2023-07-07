@@ -12,16 +12,15 @@ import (
 	"github.com/gofrs/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
-	"github.com/xssnick/tonutils-go/ton"
 	"github.com/xssnick/tonutils-go/ton/wallet"
 )
 
 type repository struct {
-	client *pgxpool.Pool
+	*useTx
 }
 
 func NewRepository(ctx context.Context, client *pgxpool.Pool) (Repository, error) {
-	conn := repository{client}
+	conn := repository{&useTx{client}}
 	return &conn, nil
 }
 
@@ -54,7 +53,7 @@ func (c *repository) SaveTonWallet(ctx context.Context, walletData models.Wallet
 	if err != nil {
 		return err
 	}
-	c.addressBook.put(walletData.Address, models.AddressInfo{Type: walletData.Type, Owner: nil})
+	// c.addressBook.put(walletData.Address, models.AddressInfo{Type: walletData.Type, Owner: nil})
 	return nil
 }
 
@@ -131,19 +130,19 @@ func (c *repository) SaveJettonWallet(
 		return err
 	}
 
-	if walletData.Type == models.JettonDepositWallet {
-		// only jetton deposit owners tracked by address book
-		// hot TON wallet also owner of jetton hot wallets
-		// cold wallets excluded from address book
-		c.addressBook.put(ownerAddress, models.AddressInfo{Type: models.JettonOwner, Owner: nil})
-	}
-	c.addressBook.put(walletData.Address, models.AddressInfo{Type: walletData.Type, Owner: &ownerAddress})
+	// if walletData.Type == models.JettonDepositWallet {
+	// 	// only jetton deposit owners tracked by address book
+	// 	// hot TON wallet also owner of jetton hot wallets
+	// 	// cold wallets excluded from address book
+	// 	c.addressBook.put(ownerAddress, models.AddressInfo{Type: models.JettonOwner, Owner: nil})
+	// }
+	// c.addressBook.put(walletData.Address, models.AddressInfo{Type: walletData.Type, Owner: &ownerAddress})
 	return nil
 }
 
 func (c *repository) GetTonWalletsAddresses(
 	ctx context.Context,
-	userID string,
+	userID int64,
 	types []models.WalletType,
 ) (
 	[]models.Address,
@@ -175,7 +174,7 @@ func (c *repository) GetTonWalletsAddresses(
 
 func (c *repository) GetJettonOwnersAddresses(
 	ctx context.Context,
-	userID string,
+	userID int64,
 	types []models.WalletType,
 ) (
 	[]models.OwnerWallet,
@@ -206,7 +205,7 @@ func (c *repository) GetJettonOwnersAddresses(
 	return res, nil
 }
 
-func saveExternalIncome(ctx context.Context, tx pgx.Tx, inc models.ExternalIncome) error {
+func (c *repository) SaveExternalIncome(ctx context.Context, tx Tx, inc models.ExternalIncome) error {
 	_, err := tx.Exec(ctx, `
 		INSERT INTO payments.external_incomes (
 		lt,
@@ -229,27 +228,27 @@ func saveExternalIncome(ctx context.Context, tx pgx.Tx, inc models.ExternalIncom
 	return err
 }
 
-func (c *repository) saveInternalIncome(ctx context.Context, tx pgx.Tx, inc models.InternalIncome) error {
+func (c *repository) SaveInternalIncome(ctx context.Context, tx Tx, inc models.InternalIncome) error {
 	memo, err := uuid.FromString(inc.Memo)
 	if err != nil {
 		return err
 	}
-
-	wType, ok := c.GetWalletType(inc.From)
 	var from models.Address
-	if ok && wType == models.JettonOwner { // convert jetton owner address to jetton wallet address
-		err = tx.QueryRow(ctx, `
-			SELECT jw.address
-			FROM payments.ton_wallets tw
-			LEFT JOIN payments.jetton_wallets jw ON tw.subwallet_id = jw.subwallet_id
-			WHERE tw.address = $1
-		`, inc.From).Scan(&from)
-		if err != nil {
-			return err
-		}
-	} else {
-		from = inc.From
-	}
+
+	// wType, ok := c.GetWalletType(inc.From)
+	// if ok && wType == models.JettonOwner { // convert jetton owner address to jetton wallet address
+	// 	err = tx.QueryRow(ctx, `
+	// 		SELECT jw.address
+	// 		FROM payments.ton_wallets tw
+	// 		LEFT JOIN payments.jetton_wallets jw ON tw.subwallet_id = jw.subwallet_id
+	// 		WHERE tw.address = $1
+	// 	`, inc.From).Scan(&from)
+	// 	if err != nil {
+	// 		return err
+	// 	}
+	// } else {
+	from = inc.From
+	// }
 
 	_, err = tx.Exec(ctx, `
 		INSERT INTO payments.internal_incomes (
@@ -269,7 +268,7 @@ func (c *repository) saveInternalIncome(ctx context.Context, tx pgx.Tx, inc mode
 	return err
 }
 
-func saveBlock(ctx context.Context, tx pgx.Tx, block models.ShardBlockHeader) error {
+func (c *repository) SaveBlock(ctx context.Context, tx Tx, block models.ShardBlockHeader) error {
 	_, err := tx.Exec(ctx, `
 		INSERT INTO payments.block_data (
 		shard,
@@ -288,7 +287,7 @@ func saveBlock(ctx context.Context, tx pgx.Tx, block models.ShardBlockHeader) er
 	return err
 }
 
-func updateInternalWithdrawal(ctx context.Context, tx pgx.Tx, w models.InternalWithdrawal) error {
+func (c *repository) UpdateInternalWithdrawal(ctx context.Context, tx Tx, w models.InternalWithdrawal) error {
 	memo, err := uuid.FromString(w.Memo)
 	if err != nil {
 		return err
@@ -337,59 +336,9 @@ func updateInternalWithdrawal(ctx context.Context, tx pgx.Tx, w models.InternalW
 	return err
 }
 
-func (c *repository) SaveParsedBlockData(ctx context.Context, events models.BlockEvents) error {
-	tx, err := c.client.Begin(ctx)
-	if err != nil {
-		return err
-	}
-	defer tx.Rollback(ctx)
-	for _, ei := range events.ExternalIncomes {
-		err = saveExternalIncome(ctx, tx, ei)
-		if err != nil {
-			return err
-		}
-	}
-	for _, ii := range events.InternalIncomes {
-		err = c.saveInternalIncome(ctx, tx, ii)
-		if err != nil {
-			return err
-		}
-	}
-	for _, sc := range events.SendingConfirmations {
-		err = applySendingConfirmations(ctx, tx, sc)
-		if err != nil {
-			return err
-		}
-	}
-	for _, iw := range events.InternalWithdrawals {
-		err = updateInternalWithdrawal(ctx, tx, iw)
-		if err != nil {
-			return err
-		}
-	}
-	for _, ew := range events.ExternalWithdrawals {
-		err = updateExternalWithdrawal(ctx, tx, ew)
-		if err != nil {
-			return err
-		}
-	}
-	for _, wc := range events.WithdrawalConfirmations {
-		err = applyJettonWithdrawalConfirmation(ctx, tx, wc)
-		if err != nil {
-			return err
-		}
-	}
-	err = saveBlock(ctx, tx, events.Block)
-	if err != nil {
-		return err
-	}
-	err = tx.Commit(ctx)
-	return err
-}
-
-func applyJettonWithdrawalConfirmation(
+func (c *repository) ApplyJettonWithdrawalConfirmation(
 	ctx context.Context,
-	tx pgx.Tx,
+	tx Tx,
 	confirm models.JettonWithdrawalConfirmation,
 ) error {
 	_, err := tx.Exec(ctx, `
@@ -401,7 +350,7 @@ func applyJettonWithdrawalConfirmation(
 	return err
 }
 
-func updateExternalWithdrawal(ctx context.Context, tx pgx.Tx, w models.ExternalWithdrawal) error {
+func (c *repository) UpdateExternalWithdrawal(ctx context.Context, tx Tx, w models.ExternalWithdrawal) error {
 	var queryID int64
 
 	var alreadyFailed bool
@@ -458,7 +407,7 @@ func updateExternalWithdrawal(ctx context.Context, tx pgx.Tx, w models.ExternalW
 	return err
 }
 
-func applySendingConfirmations(ctx context.Context, tx pgx.Tx, w models.SendingConfirmation) error {
+func (c *repository) ApplySendingConfirmations(ctx context.Context, tx Tx, w models.SendingConfirmation) error {
 	var alreadyFailed bool
 	memo, err := uuid.FromString(w.Memo)
 	if err != nil {
@@ -495,22 +444,24 @@ func (c *repository) GetTonHotWalletAddress(ctx context.Context) (models.Address
 	return addr, err
 }
 
-func (c *repository) GetLastSavedBlockID(ctx context.Context) (*ton.BlockIDExt, error) {
-	var blockID ton.BlockIDExt
+func (c *repository) GetLastSavedBlock(ctx context.Context) (*models.ShardBlockHeader, error) {
+	var block models.ShardBlockHeader
 	err := c.client.QueryRow(ctx, `
 		SELECT 
 		    seqno, 
 		    shard, 
 		    root_hash, 
-		    file_hash
+		    file_hash,
+				gen_utime
 		FROM payments.block_data
 		ORDER BY seqno DESC
 		LIMIT 1
 	`).Scan(
-		&blockID.SeqNo,
-		&blockID.Shard,
-		&blockID.RootHash,
-		&blockID.FileHash,
+		&block.SeqNo,
+		&block.Shard,
+		&block.RootHash,
+		&block.FileHash,
+		&block.GenUtime,
 	)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, models.ErrNotFound
@@ -518,8 +469,8 @@ func (c *repository) GetLastSavedBlockID(ctx context.Context) (*ton.BlockIDExt, 
 	if err != nil {
 		return nil, err
 	}
-	blockID.Workchain = models.DefaultWorkchain
-	return &blockID, nil
+	block.Workchain = models.DefaultWorkchain
+	return &block, nil
 }
 
 // SetExpired TODO: maybe add block related expiration
@@ -578,57 +529,60 @@ func (c *repository) SetExpired(ctx context.Context) error {
 	return tx.Commit(ctx)
 }
 
-func (c *repository) IsActualBlockData(ctx context.Context) (bool, error) {
-	var lastBlockTime time.Time
-	err := c.client.QueryRow(ctx, `
-		SELECT 
-		    gen_utime
-		FROM payments.block_data
-		ORDER BY seqno DESC
-		LIMIT 1
-	`).Scan(&lastBlockTime)
-	if errors.Is(err, pgx.ErrNoRows) {
-		return false, nil
-	}
-	if err != nil {
-		return false, err
-	}
-	return time.Since(lastBlockTime) < config.AllowableBlockchainLagging, nil
-}
+var externalIncomeQuery = `
+SELECT COALESCE(jw.address,tw.address) as deposit, COALESCE(SUM(i.amount),0) as balance, COALESCE(jw.currency,$1) as currency
+FROM payments.ton_wallets tw
+			 LEFT JOIN payments.jetton_wallets jw ON jw.subwallet_id = tw.subwallet_id
+			 LEFT JOIN payments.external_incomes i ON i.deposit_address = COALESCE(jw.address,tw.address)
+WHERE tw.user_id = $2 AND tw.type = ANY($3)
+GROUP BY deposit, tw.address, jw.currency
+`
 
-// GetIncome returns list of incomes by user_id
-func (c *repository) GetIncome(
+var iternalIncomeQuery = `
+SELECT COALESCE(jw.address,tw.address) as deposit, COALESCE(SUM(i.amount),0) as balance, COALESCE(jw.currency,$1) as currency
+FROM payments.ton_wallets tw
+			 LEFT JOIN payments.jetton_wallets jw ON jw.subwallet_id = tw.subwallet_id
+			 LEFT JOIN payments.internal_incomes i ON i.deposit_address = COALESCE(jw.address,tw.address)
+WHERE tw.user_id = $2 AND tw.type = ANY($3)
+GROUP BY deposit, tw.address, jw.currency
+`
+
+// isDepositSide = external
+
+// GetInternalIncome returns list of incomes by user_id
+func (c *repository) GetExternalIncome(
 	ctx context.Context,
-	userID string,
-	isDepositSide bool,
+	userID int64,
 ) (
 	[]models.TotalIncome,
 	error,
 ) {
-	var sqlStatement string
-	if isDepositSide {
-		sqlStatement = `
-			SELECT COALESCE(jw.address,tw.address) as deposit, COALESCE(SUM(i.amount),0) as balance, COALESCE(jw.currency,$1) as currency
-			FROM payments.ton_wallets tw
-         		LEFT JOIN payments.jetton_wallets jw ON jw.subwallet_id = tw.subwallet_id
-         		LEFT JOIN payments.external_incomes i ON i.deposit_address = COALESCE(jw.address,tw.address)
-			WHERE tw.user_id = $2 AND tw.type = ANY($3)
-			GROUP BY deposit, tw.address, jw.currency
-		`
-	} else {
-		sqlStatement = `
-			SELECT COALESCE(jw.address,tw.address) as deposit, COALESCE(SUM(i.amount),0) as balance, COALESCE(jw.currency,$1) as currency
-			FROM payments.ton_wallets tw
-         		LEFT JOIN payments.jetton_wallets jw ON jw.subwallet_id = tw.subwallet_id
-         		LEFT JOIN payments.internal_incomes i ON i.deposit_address = COALESCE(jw.address,tw.address)
-			WHERE tw.user_id = $2 AND tw.type = ANY($3)
-			GROUP BY deposit, tw.address, jw.currency
-		`
-	}
+	return c.getIncome(ctx, userID, externalIncomeQuery)
+}
+
+// GetInternalIncome returns list of incomes by user_id
+func (c *repository) GetInternalIncome(
+	ctx context.Context,
+	userID int64,
+) (
+	[]models.TotalIncome,
+	error,
+) {
+	return c.getIncome(ctx, userID, iternalIncomeQuery)
+}
+
+func (c *repository) getIncome(
+	ctx context.Context,
+	userID int64,
+	query string,
+) (
+	[]models.TotalIncome,
+	error,
+) {
 
 	rows, err := c.client.Query(
 		ctx,
-		sqlStatement,
+		query,
 		models.TonSymbol,
 		userID,
 		[]models.WalletType{models.TonDepositWallet, models.JettonOwner},
@@ -653,10 +607,7 @@ func (c *repository) GetIncome(
 // GetIncomeHistory returns list of external incomes for deposit side by user_id and currency
 func (c *repository) GetIncomeHistory(
 	ctx context.Context,
-	userID string,
-	currency string,
-	limit int,
-	offset int,
+	q HistoryFilterQuery,
 ) (
 	[]models.ExternalIncome,
 	error,
@@ -667,7 +618,7 @@ func (c *repository) GetIncomeHistory(
 		walletType   models.WalletType
 	)
 
-	if currency == models.TonSymbol {
+	if q.Currency == models.TonSymbol {
 		sqlStatement = `
 			SELECT utime, lt, payer_address, deposit_address, amount, comment, payer_workchain
 			FROM payments.external_incomes i
@@ -691,7 +642,7 @@ func (c *repository) GetIncomeHistory(
 		walletType = models.JettonDepositWallet
 	}
 
-	rows, err := c.client.Query(ctx, sqlStatement, walletType, userID, currency, limit, offset)
+	rows, err := c.client.Query(ctx, sqlStatement, walletType, q.UserID, q.Currency, q.Limit(), q.Offset())
 	if err != nil {
 		return nil, err
 	}

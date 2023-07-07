@@ -21,7 +21,6 @@ COPY db db
 COPY audit audit
 COPY queue queue
 COPY webhook webhook
-RUN  git clone https://github.com/tonkeeper/tongo /tmp/tongo
 RUN go build -o /tmp/processor github.com/gobicycle/bicycle/cmd/processor
 # RUN go build -o /tmp/testutil github.com/gobicycle/bicycle/cmd/testutil
 
@@ -29,7 +28,6 @@ FROM docker.io/library/ubuntu:20.04 AS payment-processor
 RUN apt-get update && apt-get -y install zlib1g-dev libssl-dev openssl ca-certificates && rm -rf /var/lib/apt/lists/*
 RUN mkdir -p /lib
 COPY --from=builder /tmp/processor /app/processor
-COPY --from=builder /tmp/tongo/lib/linux/libemulator.so /lib
 ENV LD_LIBRARY_PATH=/lib
 CMD ["/app/processor", "-v"]
 

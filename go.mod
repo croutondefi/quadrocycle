@@ -5,13 +5,14 @@ go 1.19
 require (
 	github.com/caarlos0/env/v6 v6.9.3
 	github.com/gofrs/uuid v4.0.0+incompatible
+	github.com/gorilla/schema v1.2.0
 	github.com/jackc/pgx/v5 v5.4.1
 	github.com/prometheus/client_golang v1.13.0
 	github.com/shopspring/decimal v1.2.0
 	github.com/sirupsen/logrus v1.8.1
 	github.com/streadway/amqp v1.0.0
-	github.com/tonkeeper/tongo v1.0.9
-	github.com/xssnick/tonutils-go v1.7.3
+	github.com/uptrace/bunrouter v1.0.20
+	github.com/xssnick/tonutils-go v1.7.4
 )
 
 require (
@@ -27,10 +28,7 @@ require (
 	github.com/prometheus/common v0.37.0 // indirect
 	github.com/prometheus/procfs v0.8.0 // indirect
 	github.com/sigurn/crc16 v0.0.0-20211026045750-20ab5afb07e3 // indirect
-	github.com/snksoft/crc v1.1.0 // indirect
-	github.com/uptrace/bunrouter v1.0.20 // indirect
 	golang.org/x/crypto v0.9.0 // indirect
-	golang.org/x/exp v0.0.0-20230116083435-1de6713980de // indirect
 	golang.org/x/sync v0.1.0 // indirect
 	golang.org/x/sys v0.8.0 // indirect
 	golang.org/x/text v0.9.0 // indirect

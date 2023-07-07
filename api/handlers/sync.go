@@ -5,26 +5,24 @@ import (
 	"fmt"
 	"net/http"
 
-	log "github.com/sirupsen/logrus"
 	"github.com/uptrace/bunrouter"
 )
 
+type GetSyncResponse struct {
+	IsSynced bool `json:"is_synced"`
+}
+
 func (h *Handler) getSync(resp http.ResponseWriter, req bunrouter.Request) error {
-	isSynced, err := h.repo.IsActualBlockData(req.Context())
+	isSynced, err := h.SyncUsecases.IsSynced(req.Context())
+
 	if err != nil {
-		writeHttpError(resp, http.StatusInternalServerError, fmt.Sprintf("get sync from db err: %v", err))
+		writeHttpError(resp, http.StatusInternalServerError, fmt.Sprintf("failed to sync: %v", err))
 		return err
 	}
-	getSyncResponse := struct {
-		IsSynced bool `json:"is_synced"`
-	}{
-		IsSynced: isSynced,
-	}
-	resp.WriteHeader(http.StatusOK)
-	err = json.NewEncoder(resp).Encode(getSyncResponse)
-	if err != nil {
-		log.Errorf("json encode error: %v", err)
-	}
 
-	return err
+	resp.WriteHeader(http.StatusOK)
+	_ = json.NewEncoder(resp).Encode(GetSyncResponse{
+		IsSynced: isSynced,
+	})
+	return nil
 }

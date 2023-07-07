@@ -26,3 +26,10 @@ func ParseAddress(addr string) (models.Address, error) {
 	res, err := models.AddressFromTonutilsAddress(a)
 	return res, err
 }
+
+func IsValidCurrency(cur string) bool {
+	if _, ok := config.Config.Jettons[cur]; ok || cur == models.TonSymbol {
+		return true
+	}
+	return false
+}

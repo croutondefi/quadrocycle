@@ -161,7 +161,7 @@ func (c *withdrawalRepository) UpdateWithdrawalRequest(ctx context.Context, tx p
 	return
 }
 
-func (c *withdrawalRepository) SaveServiceWithdrawalRequest(ctx context.Context, w models.ServiceWithdrawalRequest) (
+func (c *withdrawalRepository) CreateServiceWithdrawalRequest(ctx context.Context, w models.ServiceWithdrawalRequest) (
 	uuid.UUID,
 	error,
 ) {

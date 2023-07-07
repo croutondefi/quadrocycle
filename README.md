@@ -1,7 +1,11 @@
-# TON payment processor
+# Quadrocycle - TON payment processor
 [![Based on TON][ton-svg]][ton]
 [![Go](https://github.com/gobicycle/bicycle/actions/workflows/go.yml/badge.svg)](https://github.com/gobicycle/bicycle/actions/workflows/go.yml)
 [![Telegram][telegram-svg]][telegram-url]
+
+## Attention
+Do not use in production - currently in active development
+Project is based on bicycle payment processor, but the whole architecture has been restructured for sake of stability and predictability.
 
 Microservice for accepting payments and making withdrawals to wallets in TON blockchain.  
 Supports TON coins and Jettons (conforming certain criteria)  

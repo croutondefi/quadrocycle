@@ -8,13 +8,14 @@ import (
 	"testing"
 	"time"
 
+	"github.com/gobicycle/bicycle/db"
 	"github.com/gobicycle/bicycle/models"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 var dbURI string
 
-func execMultiStatement(c Repository, ctx context.Context, query string) error {
+func execMultiStatement(c db.Repository, ctx context.Context, query string) error {
 	query = strings.TrimPrefix(query, "BEGIN;")
 	query = strings.TrimSuffix(query, "COMMIT;")
 	queries := strings.Split(query, ";")

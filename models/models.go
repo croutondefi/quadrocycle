@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"math/big"
+	"time"
 
 	"github.com/gobicycle/bicycle/config"
 	"github.com/gofrs/uuid"
@@ -290,17 +291,9 @@ type ShardBlockHeader struct {
 	Parent    *ton.BlockIDExt
 }
 
-// type blockchain interface {
-// 	GetJettonWalletAddress(ctx context.Context, ownerWallet *address.Address, jettonMaster *address.Address) (*address.Address, error)
-// 	GetTransactionIDsFromBlock(ctx context.Context, blockID *ton.BlockIDExt) ([]ton.TransactionShortInfo, error)
-// 	GetTransactionFromBlock(ctx context.Context, blockID *ton.BlockIDExt, txID ton.TransactionShortInfo) (*tlb.Transaction, error)
-// 	GenerateDefaultWallet(seed string, isHighload bool) (*wallet.Wallet, byte, uint32, error)
-// 	GetJettonBalance(ctx context.Context, address Address, blockID *ton.BlockIDExt) (*big.Int, error)
-// 	SendExternalMessage(ctx context.Context, msg *tlb.ExternalMessage) error
-// 	GetAccountCurrentState(ctx context.Context, address *address.Address) (*big.Int, tlb.AccountStatus, error)
-// 	GetLastJettonBalance(ctx context.Context, address *address.Address) (*big.Int, error)
-// 	DeployTonWallet(ctx context.Context, wallet *wallet.Wallet) error
-// }
+func (b *ShardBlockHeader) IsExpired() bool {
+	return time.Since(time.Unix(int64(b.GenUtime), 0)) > config.AllowableBlockchainLagging
+}
 
 // type blocksTracker interface {
 // 	Start(context.Context)
